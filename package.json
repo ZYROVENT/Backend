@@ -17,6 +17,7 @@
     "cors": "^2.8.5",
     "dotenv": "^16.6.1",
     "express": "^4.22.1",
+    "yt-search": "^2.13.1",
     "googleapis": "^128.0.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^1.4.5-lts.1",
