@@ -1,18 +1,12 @@
 const express = require('express');
-const cors = require('cors');
 const path = require('path');
 const ytSearch = require('yt-search');
 
-const app = express();
-const PORT = 3000;
+const router = express.Router();
 
-// Middlewares
-app.use(cors());
-app.use(express.json());
-
-// Servir la interfaz web del Launcher directamente (index.html, css, js, icons, etc.)
+// Servir la interfaz web del Launcher directamente
 const assetsPath = path.join(__dirname, 'app', 'src', 'main', 'assets');
-app.use(express.static(assetsPath));
+router.use(express.static(assetsPath));
 
 // Función para procesar la búsqueda con yt-search
 const handleSearch = async (query, res) => {
@@ -37,7 +31,7 @@ const handleSearch = async (query, res) => {
             author: v.author.name
         }));
 
-        res.json(videos); // Devuelve directamente el array de videos para compatibilidad directa con el launcher
+        res.json(videos);
 
     } catch (error) {
         console.error('❌ Error en la busqueda:', error.message);
@@ -49,32 +43,21 @@ const handleSearch = async (query, res) => {
     }
 };
 
-// Soporta peticiones GET (/api/search?q=cancion) y POST ({ query: "cancion" })
-app.get('/api/search', (req, res) => {
+// Soporta peticiones GET (/search/api?q=cancion) y POST
+router.get('/api', (req, res) => {
     const query = req.query.q || req.query.query;
     handleSearch(query, res);
 });
 
-app.post('/api/search', (req, res) => {
+router.post('/api', (req, res) => {
     const { query } = req.body;
     handleSearch(query, res);
 });
 
-// Ruta por defecto para enviar index.html si accedes desde navegador
-app.get('/', (req, res) => {
+// Ruta por defecto para enviar index.html
+router.get('/', (req, res) => {
     res.sendFile(path.join(assetsPath, 'index.html'));
 });
 
-// Iniciar servidor
-app.listen(PORT, '0.0.0.0', () => {
-    const os = require('os');
-    const networkInterfaces = os.networkInterfaces();
-    const localIp = Object.values(networkInterfaces).flat().find(i => i.family === 'IPv4' && !i.internal)?.address || 'localhost';
-
-    console.log(`\n==============================================`);
-    console.log(`🚀 Live-Server & API de GLauncher en ejecucion`);
-    console.log(`🌐 Interfaz Web: http://localhost:${PORT}`);
-    console.log(`📱 URL Red Local: http://${localIp}:${PORT}`);
-    console.log(`🎵 API GMusic Search: http://${localIp}:${PORT}/api/search`);
-    console.log(`==============================================\n`);
-});
+// Exportamos el router para integrarlo en el servidor principal
+module.exports = router;
