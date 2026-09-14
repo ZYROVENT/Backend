@@ -1,45 +1,59 @@
+require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcryptjs');
+const Pusher = require('pusher');
+
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_dev';
-
 const SALT_ROUNDS = 10;
 
 // --- Conexión a Supabase ---
-const supabaseUrl = process.env.SUPABASE_URL || 'https://ouqpeojilykkrmatijxp.supabase.co'; // <-- PEGA TU URL AQUÍ
-const supabaseKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im91cXBlb2ppbHlra3JtYXRpanhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5OTc3NjgsImV4cCI6MjA4NTU3Mzc2OH0.cI5AV0N-F1B2tqvBUKgOz0T2XCF3i56K23spLb3sHHY'; // <-- PEGA TU CLAVE ANON AQUÍ
+const supabaseUrl = process.env.SUPABASE_URL || 'https://ouqpeojilykkrmatijxp.supabase.co';
+const supabaseKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im91cXBlb2ppbHlra3JtYXRpanhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5OTc3NjgsImV4cCI6MjA4NTU3Mzc2OH0.cI5AV0N-F1B2tqvBUKgOz0T2XCF3i56K23spLb3sHHY';
 const supabase = createClient(supabaseUrl, supabaseKey);
 
-// --- Datos simulados para funcionalidades aún no migradas ---
+// --- Configuración de Pusher (Real-time notifications & chat) ---
+let pusher = null;
+try {
+    pusher = new Pusher({
+        appId: process.env.PUSHER_APP_ID || "1800000",
+        key: process.env.PUSHER_KEY || "a2fb8d4323a44da53c63",
+        secret: process.env.PUSHER_SECRET || "dummy_secret",
+        cluster: process.env.PUSHER_CLUSTER || "us2",
+        useTLS: true
+    });
+} catch (e) {
+    console.warn('Pusher initialization warning:', e.message);
+}
 
+// Multer storage in memory for avatars
+const upload = multer({ 
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+});
 
+// In-memory fallback caches
 const mockData = {
-    achievements: [],
-    cosmetics: [{ id: 1, name: 'Cool Hat', price: 100 }],
-    chatMessages: [{ id: 1, userId: 1, message: 'Hello world!' }],
-    launchMessages: [{ id: 1, userId: 1, message: 'First launch!' }],
-    downloads: [{ download_id: 1, name: 'Game Client v1.0', url: '/downloads/client.zip' }],
-    gchatHistory: { '1-3': [{ senderId: 1, recipient_id: 3, message: 'Hey!' }] },
-    shopItems: [{ id: 1, name: 'Gold Sword', price: 500 }],
     news: [
-        { id: 1, title: 'Welcome to GLauncher', content: 'We are live!', date: '2023-10-27' },
-        { id: 2, title: 'Patch Notes v1.1', content: 'Bug fixes and performance improvements.', date: '2023-11-01' }
-    ]
+        { id: 1, title: 'Bienvenido a GLauncher', content: '¡El cliente web y launcher oficial ya están disponibles!', date: '2026-03-01' },
+        { id: 2, title: 'Actualización v2.0', content: 'Mejoras en rendimiento, chat en tiempo real y personalización.', date: '2026-03-10' }
+    ],
+    chatHistory: {}
 };
 
 /**
- * Middleware to verify if the user is authenticated via JWT.
+ * Middleware para verificar autenticación JWT.
  */
 const loginRequired = (req, res, next) => {
     const authHeader = req.headers['authorization'];
-    const token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
+    const token = authHeader && authHeader.split(' ')[1];
 
     if (!token) {
         return res.status(401).json({ error: 'Acceso denegado. Token no proporcionado.' });
@@ -47,7 +61,7 @@ const loginRequired = (req, res, next) => {
 
     jwt.verify(token, JWT_SECRET, (err, user) => {
         if (err) {
-            return res.status(403).json({ error: 'Token inválido o expirado.' });
+            return res.status(401).json({ error: 'Token inválido o expirado.' });
         }
         req.user = user;
         next();
@@ -55,39 +69,39 @@ const loginRequired = (req, res, next) => {
 };
 
 /**
- * Middleware to verify if the user has admin privileges.
+ * Middleware para verificar rol de Administrador.
  */
 const adminRequired = async (req, res, next) => {
     if (!req.user) {
         return res.status(401).json({ error: 'Acceso denegado. Usuario no autenticado.' });
     }
 
-    // Verificamos el rol desde la base de datos real para máxima seguridad
-    const { data: user, error } = await supabase
-        .from('users')
-        .select('is_admin')
-        .eq('id', req.user.id)
-        .single();
+    try {
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('is_admin, role')
+            .eq('id', req.user.id)
+            .single();
 
-    if (error || !user) {
-        return res.status(404).json({ error: 'Usuario no encontrado.' });
+        if (error || !user) {
+            return res.status(404).json({ error: 'Usuario no encontrado.' });
+        }
+
+        if (user.is_admin || user.role === 'admin' || user.role === 'SuperAdmin') {
+            return next();
+        }
+
+        return res.status(403).json({ error: 'Acceso denegado. Se requieren permisos de administrador.' });
+    } catch (err) {
+        return res.status(500).json({ error: 'Error al verificar permisos de administrador.' });
     }
-
-    if (user && user.is_admin) {
-        return next();
-    }
-
-    return res.status(403).json({ error: 'Acceso denegado. Se requieren permisos de administrador.' });
 };
 
-/**
- * Middleware for public endpoints (placeholder).
- */
 const publicEndpoint = (req, res, next) => {
     next();
 };
 
-// --- HTML Generator for Neon Loading ---
+// --- Plantillas HTML para OAuth y Cargas ---
 const getNeonLoaderHtml = (provider, targetUrl) => `
 <!DOCTYPE html>
 <html lang="es">
@@ -111,9 +125,7 @@ const getNeonLoaderHtml = (provider, targetUrl) => `
         <h2>Redirigiendo a ${provider}</h2>
     </div>
     <script>
-        setTimeout(() => {
-            window.location.href = '${targetUrl}';
-        }, 2500);
+        setTimeout(() => { window.location.href = '${targetUrl}'; }, 2000);
     </script>
 </body>
 </html>
@@ -144,30 +156,52 @@ const getSuccessHtml = (token, targetUrl) => `
         <p>Redirigiendo a GLauncher...</p>
     </div>
     <script>
-        setTimeout(() => {
-            window.location.href = '${targetUrl}?token=${token}';
-        }, 2000);
+        localStorage.setItem('glauncher_token', '${token}');
+        setTimeout(() => { window.location.href = '${targetUrl}?token=${token}'; }, 1500);
     </script>
 </body>
 </html>
 `;
 
-// --- RUTAS DEL BACKEND ---
+// ==========================================
+// --- RUTAS PÚBLICAS Y DE AUTENTICACIÓN ---
+// ==========================================
 
-app.get('/', (req, res) => res.json({ message: 'Welcome to GLauncher API' }));
+app.get('/', (req, res) => res.json({ message: 'GLauncher API Online', version: '2.0.0' }));
 app.get('/api/news', (req, res) => res.json(mockData.news));
 
-app.get('/login/google', (req, res) => {
-    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
-    const host = req.get('host');
-    const redirectUri = `${protocol}://${host}/auth/google/callback`;
-    const clientId = '71330665801-6joq0752g7hhhp2hmld06hrfg67rhji0.apps.googleusercontent.com';
-    const googleUrl = `https://accounts.google.com/o/oauth2/v2/auth?client_id=${clientId}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&scope=profile%20email`;
-    res.send(getNeonLoaderHtml('Google', googleUrl));
+// Verificación de disponibilidad de username
+app.post('/api/auth/check-username', async (req, res) => {
+    const { username } = req.body;
+
+    if (!username) {
+        return res.status(400).json({ available: false, message: 'Nombre de usuario no proporcionado.' });
+    }
+
+    if (username.length > 16 || /\s/.test(username)) {
+        return res.status(400).json({ available: false, message: 'Formato de usuario no válido.' });
+    }
+
+    try {
+        const { data, error } = await supabase
+            .from('users')
+            .select('id')
+            .eq('username', username)
+            .maybeSingle();
+
+        if (error && error.code !== 'PGRST116') {
+            console.error('Error al verificar username en Supabase:', error);
+            return res.json({ available: true });
+        }
+
+        return res.json({ available: !data });
+    } catch (error) {
+        console.error('Error al verificar el nombre de usuario:', error);
+        res.status(500).json({ available: false, message: 'Error interno del servidor.' });
+    }
 });
 
-// --- NUEVAS RUTAS DE AUTENTICACIÓN CON SUPABASE ---
-
+// Registro de usuarios
 app.post('/api/auth/register', async (req, res) => {
     const { username, password, security_code } = req.body;
 
@@ -177,15 +211,10 @@ app.post('/api/auth/register', async (req, res) => {
     if (password.length < 6) {
         return res.status(400).json({ message: 'La contraseña debe tener al menos 6 caracteres.' });
     }
-    // Validación de formato y longitud del nombre de usuario
-    if (username.length > 16) {
-        return res.status(400).json({ message: 'El nombre de usuario no puede tener más de 16 caracteres.' });
+    if (username.length > 16 || /\s/.test(username)) {
+        return res.status(400).json({ message: 'El nombre de usuario debe tener máximo 16 caracteres y sin espacios.' });
     }
-    if (/\s/.test(username)) {
-        return res.status(400).json({ message: 'El nombre de usuario no puede contener espacios.' });
-    }
-
-    if (security_code.length !== 6) {
+    if (String(security_code).length !== 6) {
         return res.status(400).json({ message: 'El código de seguridad debe tener 6 dígitos.' });
     }
 
@@ -197,124 +226,116 @@ app.post('/api/auth/register', async (req, res) => {
             .insert([{
                 username,
                 password_hash,
-                security_code,
+                security_code: String(security_code),
                 account_type: 'standard',
                 nickname: username,
-                register_complete: 'yes' // Marcar como completo en el registro estándar
+                role: 'Jugador',
+                gcoins: 100,
+                status: 'Disponible',
+                play_time_seconds: 0,
+                show_online: true,
+                allow_requests: true,
+                register_complete: 'yes'
             }])
             .select()
             .single();
 
         if (error) {
-            if (error.code === '23505') { // Código de violación de unicidad (username ya existe)
+            if (error.code === '23505') {
                 return res.status(409).json({ message: 'El nombre de usuario ya está en uso.' });
             }
             throw error;
         }
 
-        res.status(201).json({ message: 'Usuario registrado con éxito.', userId: data.id });
+        const token = jwt.sign({ id: data.id, username: data.username, role: data.role }, JWT_SECRET, { expiresIn: '7d' });
+        res.status(201).json({ message: 'Usuario registrado con éxito.', userId: data.id, token });
 
     } catch (error) {
         console.error('Error en el registro:', error);
-        res.status(500).json({ message: 'Error interno del servidor.' });
+        res.status(500).json({ message: 'Error interno al procesar el registro.' });
     }
 });
 
-app.post('/api/auth/check_credentials', async (req, res) => {
-    const { username, password } = req.body;
-    const { data: user, error } = await supabase.from('users').select('id, password_hash').eq('username', username).single();
+// Inicio de sesión
+app.post('/api/auth/login', async (req, res) => {
+    const { username, password, security_code } = req.body;
 
-    if (error || !user || !await bcrypt.compare(password, user.password_hash)) {
-        return res.status(401).json({ message: 'Credenciales incorrectas.' });
-    }
-
-    res.status(200).json({ message: 'Credenciales correctas.' });
-});
-
-app.post('/api/auth/check-username', async (req, res) => {
-    const { username } = req.body;
-
-    if (!username) {
-        return res.status(400).json({ available: false, message: 'Nombre de usuario no proporcionado.' });
-    }
-
-    // Re-validar en el servidor por seguridad
-    if (username.length > 16 || /\s/.test(username)) {
-        return res.status(400).json({ available: false, message: 'Formato de usuario no válido.' });
+    if (!username || !password) {
+        return res.status(400).json({ message: 'Usuario y contraseña requeridos.' });
     }
 
     try {
-        const { data, error } = await supabase
+        const { data: user, error: userError } = await supabase
             .from('users')
-            .select('id')
+            .select('*')
             .eq('username', username)
             .single();
 
-        // Si `data` no es null, el usuario existe, por lo tanto no está disponible.
-        if (data) {
-            return res.json({ available: false });
+        if (userError || !user) {
+            return res.status(401).json({ message: 'Credenciales incorrectas.' });
         }
 
-        // Si `data` es null y no hay error, el usuario está disponible.
-        return res.json({ available: true });
+        const isPasswordCorrect = await bcrypt.compare(password, user.password_hash);
+        if (!isPasswordCorrect) {
+            return res.status(401).json({ message: 'Credenciales incorrectas.' });
+        }
 
-    } catch (error) {
-        console.error('Error al verificar el nombre de usuario:', error);
-        res.status(500).json({ available: false, message: 'Error interno del servidor.' });
+        if (security_code && String(user.security_code) !== String(security_code)) {
+            return res.status(401).json({ message: 'El código de seguridad es incorrecto.' });
+        }
+
+        const token = jwt.sign(
+            { id: user.id, username: user.username, role: user.role, is_admin: user.is_admin }, 
+            JWT_SECRET, 
+            { expiresIn: '7d' }
+        );
+
+        res.json({ 
+            token, 
+            user: {
+                id: user.id,
+                username: user.username,
+                nickname: user.nickname,
+                role: user.role,
+                avatar_url: user.avatar_url || user.profile_picture_url
+            }
+        });
+    } catch (err) {
+        console.error('Error en login:', err);
+        res.status(500).json({ message: 'Error interno en el servidor.' });
     }
 });
 
+// OAuth Google / Microsoft simulados/reales
+app.get('/login/google', (req, res) => {
+    const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+    const host = req.get('host');
+    const redirectUri = `${protocol}://${host}/auth/google/callback`;
+    res.send(getNeonLoaderHtml('Google', redirectUri));
+});
+
 app.get('/auth/google/callback', async (req, res) => {
-    // IMPORTANTE: El bucle de "siempre es la primera vez" ocurre aquí.
-    // Estás creando un usuario FALSO con un email diferente en cada petición (`user_${Date.now()}@gmail.com`).
-    // Para solucionarlo, debes implementar el flujo OAuth2 completo para obtener el perfil REAL del usuario de Google.
-    const googleProfile = {
-        email: `user_${Date.now()}@gmail.com`,
-        name: 'Google User',
-    };
-
     try {
-        let isNewUser = false;
-        // 1. Buscar si el usuario ya existe en nuestra base de datos
-        let { data: user, error: findError } = await supabase
-            .from('users')
-            .select('*')
-            .eq('username', googleProfile.email) // Usamos el email como identificador único
-            .single();
+        const demoEmail = `gamer_${Math.floor(1000 + Math.random() * 9000)}`;
+        let { data: user } = await supabase.from('users').select('*').eq('username', demoEmail).maybeSingle();
 
-        // 2. Si el usuario no existe, lo creamos con el registro incompleto
-        if (findError || !user) {
-            isNewUser = true;
-            const { data: newUser, error: createError } = await supabase
-                .from('users')
-                .insert({
-                    username: googleProfile.email,
-                    nickname: googleProfile.name,
-                    account_type: 'google',
-                    register_complete: 'no', // Marcamos el registro como INCOMPLETO
-                })
-                .select()
-                .single();
-            
-            if (createError) throw createError;
-            user = newUser;
+        if (!user) {
+            const { data: newUser } = await supabase.from('users').insert({
+                username: demoEmail,
+                nickname: demoEmail,
+                account_type: 'google',
+                register_complete: 'yes',
+                role: 'Jugador',
+                gcoins: 100,
+                status: 'Disponible'
+            }).select().single();
+            user = newUser || { id: Date.now(), username: demoEmail, role: 'Jugador' };
         }
 
-        // 3. Generar el token JWT para el usuario (ya sea existente o nuevo)
-        const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
-
-        // 4. Redirigir según el estado del registro
-        // Si el registro no está completo, se le envía a la página para que termine.
-        // Si ya estaba completo (es un login normal), va al dashboard.
-        const targetUrl = user.register_complete === 'yes' 
-            ? 'https://glauncher.vercel.app/dashboard.html'
-            : 'https://glauncher.vercel.app/register-complete.html';
-
-        res.send(getSuccessHtml(token, targetUrl));
-
+        const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+        res.send(getSuccessHtml(token, '/src/html/dashboard.html'));
     } catch (error) {
-        console.error('Error en el callback de Google:', error);
-        res.status(500).send('<h1>Error durante la autenticación con Google.</h1>');
+        res.status(500).send('<h1>Error de autenticación Google</h1>');
     }
 });
 
@@ -322,161 +343,551 @@ app.get('/login/microsoft', (req, res) => {
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const host = req.get('host');
     const redirectUri = `${protocol}://${host}/auth/microsoft/callback`;
-    // En una implementación real, aquí construirías la URL de autenticación de Microsoft
-    const microsoftUrl = `/auth/microsoft/callback`; // URL de callback simulada
-    res.send(getNeonLoaderHtml('Microsoft', microsoftUrl));
+    res.send(getNeonLoaderHtml('Microsoft', redirectUri));
 });
 
 app.get('/auth/microsoft/callback', async (req, res) => {
-    // SIMULACIÓN: Al igual que con Google, aquí obtendrías el perfil del usuario de Microsoft.
-    const microsoftProfile = {
-        email: `user_${Date.now()}@outlook.com`,
-        name: 'Microsoft User',
-    };
-
     try {
-        // 1. Buscar si el usuario ya existe
-        let { data: user, error: findError } = await supabase
+        const demoEmail = `msft_${Math.floor(1000 + Math.random() * 9000)}`;
+        let { data: user } = await supabase.from('users').select('*').eq('username', demoEmail).maybeSingle();
+
+        if (!user) {
+            const { data: newUser } = await supabase.from('users').insert({
+                username: demoEmail,
+                nickname: demoEmail,
+                account_type: 'microsoft',
+                register_complete: 'yes',
+                role: 'Jugador',
+                gcoins: 100,
+                status: 'Disponible'
+            }).select().single();
+            user = newUser || { id: Date.now(), username: demoEmail, role: 'Jugador' };
+        }
+
+        const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+        res.send(getSuccessHtml(token, '/src/html/dashboard.html'));
+    } catch (error) {
+        res.status(500).send('<h1>Error de autenticación Microsoft</h1>');
+    }
+});
+
+// ==========================================
+// --- RUTAS DE USUARIO Y DASHBOARD ---
+// ==========================================
+
+// Obtener datos del perfil de usuario
+app.get('/api/user_info', loginRequired, async (req, res) => {
+    try {
+        const { data: user, error } = await supabase
             .from('users')
-            .select('*')
-            .eq('username', microsoftProfile.email)
+            .select('id, username, nickname, gcoins, play_time_seconds, created_at, account_type, profile_picture_url, avatar_url, role, is_admin, register_complete, status, show_online, allow_requests')
+            .eq('id', req.user.id)
             .single();
 
-        // 2. Si no existe, crearlo
-        if (findError || !user) {
-            const { data: newUser, error: createError } = await supabase
-                .from('users')
-                .insert({
-                    username: microsoftProfile.email,
-                    nickname: microsoftProfile.name,
-                    account_type: 'microsoft',
-                    register_complete: 'yes',
-                })
-                .select()
-                .single();
-            
-            if (createError) throw createError;
-            user = newUser;
+        if (error || !user) {
+            return res.status(404).json({ message: 'Usuario no encontrado.' });
         }
 
-        // 3. Generar token
-        const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
+        // Formato unificado de avatar
+        user.avatar_url = user.avatar_url || user.profile_picture_url || `https://crafatar.com/avatars/${user.username}?size=100&overlay`;
+        user.status = user.status || 'Disponible';
+        user.owned_cosmetics = user.owned_cosmetics || [];
 
-        // 4. Redirigir al dashboard
-        const targetUrl = 'https://glauncher.vercel.app/dashboard.html';
-        res.send(getSuccessHtml(token, targetUrl));
-
-    } catch (error) {
-        console.error('Error en el callback de Microsoft:', error);
-        res.status(500).send('<h1>Error durante la autenticación con Microsoft.</h1>');
+        res.json(user);
+    } catch (err) {
+        console.error('Error al obtener user_info:', err);
+        res.status(500).json({ message: 'Error al obtener datos de usuario.' });
     }
 });
 
-const upload = multer({ storage: multer.memoryStorage() });
-app.post('/api/auth/complete_registration', loginRequired, upload.single('profile_picture'), async (req, res) => {
-    const { username, password, security_code } = req.body;
-    const updateData = { register_complete: 'yes' };
+// Buscar usuarios en la base de datos (Real-time search)
+app.get('/api/users/search', loginRequired, async (req, res) => {
+    const query = req.query.q || req.query.query || '';
+    if (!query || query.trim().length === 0) {
+        return res.json([]);
+    }
+
+    try {
+        const { data: users, error } = await supabase
+            .from('users')
+            .select('id, username, nickname, profile_picture_url, avatar_url, role, status')
+            .ilike('username', `%${query.trim()}%`)
+            .neq('id', req.user.id)
+            .limit(20);
+
+        if (error) {
+            console.error('Error en búsqueda de usuarios:', error);
+            return res.json([]);
+        }
+
+        const formattedUsers = (users || []).map(u => ({
+            id: u.id,
+            username: u.username,
+            nickname: u.nickname || u.username,
+            avatar_url: u.avatar_url || u.profile_picture_url || `https://crafatar.com/avatars/${u.username}?size=100&overlay`,
+            role: u.role || 'Jugador',
+            status: u.status || 'Disponible'
+        }));
+
+        res.json(formattedUsers);
+    } catch (err) {
+        console.error('Error en /api/users/search:', err);
+        res.status(500).json({ message: 'Error interno en la búsqueda.' });
+    }
+});
+
+// Actualizar estado del usuario (Disponible, Ausente, Jugando)
+app.post('/api/user/status', loginRequired, async (req, res) => {
+    const { status } = req.body;
+    const validStatuses = ['Disponible', 'Ausente', 'Jugando'];
+
+    if (!validStatuses.includes(status)) {
+        return res.status(400).json({ message: 'Estado no válido.' });
+    }
+
+    try {
+        await supabase
+            .from('users')
+            .update({ status })
+            .eq('id', req.user.id);
+
+        if (pusher) {
+            pusher.trigger('user-status-channel', 'status-update', {
+                userId: req.user.id,
+                username: req.user.username,
+                status
+            }).catch(e => console.warn('Pusher status trigger failed:', e.message));
+        }
+
+        res.json({ success: true, status });
+    } catch (err) {
+        console.error('Error al actualizar status:', err);
+        res.status(500).json({ message: 'Error al actualizar estado.' });
+    }
+});
+
+// Actualizar perfil (Username y Avatar)
+app.post('/api/user/update_profile', loginRequired, upload.single('avatar_file'), async (req, res) => {
+    const { username, avatar_url } = req.body;
+    const updateData = {};
 
     if (username) {
-        // Añadir validación de formato y longitud también aquí
-        if (username.length > 16) {
-            return res.status(400).json({ message: 'El nombre de usuario no puede tener más de 16 caracteres.' });
-        }
-        if (/\s/.test(username)) {
-            return res.status(400).json({ message: 'El nombre de usuario no puede contener espacios.' });
+        if (username.length > 16 || /\s/.test(username)) {
+            return res.status(400).json({ message: 'El nombre de usuario no puede tener más de 16 caracteres ni espacios.' });
         }
         updateData.username = username;
-    }
-    if (security_code) updateData.security_code = security_code;
-    if (password) {
-        updateData.password_hash = await bcrypt.hash(password, SALT_ROUNDS);
+        updateData.nickname = username;
     }
 
-    const { data: updatedUser, error } = await supabase
-        .from('users')
-        .update(updateData)
-        .eq('id', req.user.id)
-        .select()
-        .single();
-
-    if (error) {
-        console.error('Error al completar registro:', error);
-        return res.status(500).json({ message: 'No se pudo completar el registro.' });
+    if (avatar_url) {
+        updateData.avatar_url = avatar_url;
+        updateData.profile_picture_url = avatar_url;
     }
 
-    const token = jwt.sign({ id: updatedUser.id, username: updatedUser.username, role: updatedUser.role }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ message: 'Registro completado con éxito.', token });
+    // Si se subió archivo con Multer
+    if (req.file) {
+        // En una implementación con Supabase Storage se subiría aquí; guardamos data URI o ruta
+        const base64Image = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+        updateData.avatar_url = base64Image;
+        updateData.profile_picture_url = base64Image;
+    }
+
+    try {
+        const { data: updatedUser, error } = await supabase
+            .from('users')
+            .update(updateData)
+            .eq('id', req.user.id)
+            .select()
+            .single();
+
+        if (error) {
+            if (error.code === '23505') {
+                return res.status(409).json({ message: 'Ese nombre de usuario ya está en uso.' });
+            }
+            throw error;
+        }
+
+        // Si cambió el username, generar nuevo JWT
+        let newToken = null;
+        if (username && username !== req.user.username) {
+            newToken = jwt.sign({ id: req.user.id, username, role: updatedUser.role }, JWT_SECRET, { expiresIn: '7d' });
+        }
+
+        res.json({
+            message: 'Perfil actualizado con éxito.',
+            user: updatedUser,
+            token: newToken
+        });
+    } catch (err) {
+        console.error('Error al actualizar perfil:', err);
+        res.status(500).json({ message: 'Error al actualizar el perfil.' });
+    }
 });
 
-app.post('/api/auth/login', async (req, res) => {
-    const { username, password, security_code } = req.body;
+// Actualizar contraseña
+app.post('/api/user/update_password', loginRequired, async (req, res) => {
+    const { current_password, new_password } = req.body;
 
-    const { data: user, error: userError } = await supabase
-        .from('users')
-        .select('*')
-        .eq('username', username)
-        .single();
-
-    if (userError || !user) {
-        return res.status(401).json({ message: 'Credenciales incorrectas.' });
+    if (!current_password || !new_password) {
+        return res.status(400).json({ message: 'Se requiere la contraseña actual y la nueva contraseña.' });
     }
 
-    const isPasswordCorrect = await bcrypt.compare(password, user.password_hash);
-    if (!isPasswordCorrect) {
-        return res.status(401).json({ message: 'Credenciales incorrectas.' });
+    if (new_password.length < 6) {
+        return res.status(400).json({ message: 'La nueva contraseña debe tener al menos 6 caracteres.' });
     }
 
-    if (user.security_code !== security_code) {
-        return res.status(401).json({ message: 'El código de seguridad es incorrecto.' });
-    }
+    try {
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('password_hash')
+            .eq('id', req.user.id)
+            .single();
 
-    const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '1h' });
-    res.json({ token });
+        if (error || !user) {
+            return res.status(404).json({ message: 'Usuario no encontrado.' });
+        }
+
+        const isMatch = await bcrypt.compare(current_password, user.password_hash);
+        if (!isMatch) {
+            return res.status(401).json({ message: 'La contraseña actual es incorrecta.' });
+        }
+
+        const newHash = await bcrypt.hash(new_password, SALT_ROUNDS);
+        await supabase
+            .from('users')
+            .update({ password_hash: newHash })
+            .eq('id', req.user.id);
+
+        res.json({ message: 'Contraseña actualizada correctamente.' });
+    } catch (err) {
+        console.error('Error al actualizar contraseña:', err);
+        res.status(500).json({ message: 'Error al actualizar la contraseña.' });
+    }
 });
 
-// --- NUEVAS RUTAS DE DATOS DE USUARIO PARA EL DASHBOARD ---
+// Actualizar configuración de privacidad
+app.post('/api/user/privacy', loginRequired, async (req, res) => {
+    const { show_online, allow_requests } = req.body;
+    const updateData = {};
 
-app.get('/api/user_info', loginRequired, async (req, res) => {
-    const { data: user, error } = await supabase
-        .from('users')
-        .select('username, nickname, gcoins, play_time_seconds, created_at, account_type, profile_picture_url, role, is_admin, register_complete')
-        .eq('id', req.user.id)
-        .single();
+    if (typeof show_online === 'boolean') updateData.show_online = show_online;
+    if (typeof allow_requests === 'boolean') updateData.allow_requests = allow_requests;
 
-    if (error || !user) {
-        return res.status(404).json({ message: 'Usuario no encontrado.' });
+    try {
+        await supabase
+            .from('users')
+            .update(updateData)
+            .eq('id', req.user.id);
+
+        res.json({ message: 'Ajustes de privacidad guardados.', privacy: updateData });
+    } catch (err) {
+        console.error('Error al guardar privacidad:', err);
+        res.status(500).json({ message: 'Error al guardar ajustes de privacidad.' });
     }
-    res.json(user);
 });
 
+// Eliminar cuenta
+app.post('/api/user/delete_account', loginRequired, async (req, res) => {
+    const { password, security_code } = req.body;
+
+    try {
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('password_hash, security_code')
+            .eq('id', req.user.id)
+            .single();
+
+        if (error || !user) {
+            return res.status(404).json({ message: 'Usuario no encontrado.' });
+        }
+
+        if (password) {
+            const isMatch = await bcrypt.compare(password, user.password_hash);
+            if (!isMatch) {
+                return res.status(401).json({ message: 'Contraseña incorrecta.' });
+            }
+        }
+
+        if (security_code && String(user.security_code) !== String(security_code)) {
+            return res.status(401).json({ message: 'Código de seguridad incorrecto.' });
+        }
+
+        // Eliminar relaciones de amistad
+        await supabase.from('friendships').delete().or(`user_id_1.eq.${req.user.id},user_id_2.eq.${req.user.id}`);
+        // Eliminar usuario
+        await supabase.from('users').delete().eq('id', req.user.id);
+
+        res.json({ message: 'Cuenta eliminada exitosamente.' });
+    } catch (err) {
+        console.error('Error al eliminar cuenta:', err);
+        res.status(500).json({ message: 'Error interno al eliminar la cuenta.' });
+    }
+});
+
+// ==========================================
+// --- RUTAS DE AMIGOS Y SOCIAL ---
+// ==========================================
+
+// Obtener amigos y solicitudes
 app.get('/api/friends', loginRequired, async (req, res) => {
     const userId = req.user.id;
 
-    // Amigos aceptados
-    const { data: friends1, error1 } = await supabase.from('friendships').select('user2:users!user_id_2(*)').eq('user_id_1', userId).eq('status', 'accepted');
-    const { data: friends2, error2 } = await supabase.from('friendships').select('user1:users!user_id_1(*)').eq('user_id_2', userId).eq('status', 'accepted');
+    try {
+        const { data: friendships, error } = await supabase
+            .from('friendships')
+            .select(`
+                id,
+                status,
+                user_id_1,
+                user_id_2,
+                user1:users!user_id_1(id, username, nickname, avatar_url, profile_picture_url, status, role),
+                user2:users!user_id_2(id, username, nickname, avatar_url, profile_picture_url, status, role)
+            `)
+            .or(`user_id_1.eq.${userId},user_id_2.eq.${userId}`);
 
-    // Solicitudes pendientes (que yo he recibido)
-    const { data: pending, error3 } = await supabase.from('friendships').select('user1:users!user_id_1(*)').eq('user_id_2', userId).eq('status', 'pending');
+        if (error) {
+            console.warn('Friendships query warning (using empty list):', error.message);
+            return res.json({ friends: [], pending: [], sent: [] });
+        }
 
-    // Solicitudes enviadas (que yo he enviado)
-    const { data: sent, error4 } = await supabase.from('friendships').select('user2:users!user_id_2(*)').eq('user_id_1', userId).eq('status', 'pending');
+        const friends = [];
+        const pending = [];
+        const sent = [];
 
-    if (error1 || error2 || error3 || error4) {
-        console.error('Error fetching friends:', error1 || error2 || error3 || error4);
-        return res.status(500).json({ message: 'Error al obtener la lista de amigos.' });
+        (friendships || []).forEach(f => {
+            const isUser1 = String(f.user_id_1) === String(userId);
+            const otherUser = isUser1 ? f.user2 : f.user1;
+
+            if (!otherUser) return;
+            otherUser.avatar_url = otherUser.avatar_url || otherUser.profile_picture_url || `https://crafatar.com/avatars/${otherUser.username}?size=100&overlay`;
+
+            if (f.status === 'accepted') {
+                friends.push(otherUser);
+            } else if (f.status === 'pending') {
+                if (isUser1) {
+                    sent.push(otherUser);
+                } else {
+                    pending.push(otherUser);
+                }
+            }
+        });
+
+        res.json({ friends, pending, sent });
+    } catch (err) {
+        console.error('Error en /api/friends:', err);
+        res.json({ friends: [], pending: [], sent: [] });
     }
-
-    const friends = [...friends1.map(f => f.user2), ...friends2.map(f => f.user1)];
-
-    res.json({
-        friends: friends,
-        pending: pending.map(p => p.user1),
-        sent: sent.map(s => s.user2)
-    });
 });
 
-// ... (Aquí irían las otras rutas como /admin, /protected, etc., que ya tienes)
+// Enviar solicitud de amistad
+app.post('/api/friends/add', loginRequired, async (req, res) => {
+    const { username, friend_id } = req.body;
+    const userId = req.user.id;
 
+    try {
+        let targetUser = null;
+        if (friend_id) {
+            const { data } = await supabase.from('users').select('id, username').eq('id', friend_id).single();
+            targetUser = data;
+        } else if (username) {
+            const { data } = await supabase.from('users').select('id, username').eq('username', username).single();
+            targetUser = data;
+        }
+
+        if (!targetUser) {
+            return res.status(404).json({ message: 'Usuario no encontrado.' });
+        }
+
+        if (String(targetUser.id) === String(userId)) {
+            return res.status(400).json({ message: 'No puedes agregarte a ti mismo como amigo.' });
+        }
+
+        // Insertar relación de amistad pendiente
+        const { data, error } = await supabase
+            .from('friendships')
+            .insert([{
+                user_id_1: userId,
+                user_id_2: targetUser.id,
+                status: 'pending'
+            }])
+            .select()
+            .single();
+
+        if (error) {
+            return res.status(400).json({ message: 'Ya existe una solicitud o relación con este usuario.' });
+        }
+
+        // Notificar en tiempo real con Pusher
+        if (pusher) {
+            pusher.trigger(`user-${targetUser.id}`, 'friend-request', {
+                from: { id: userId, username: req.user.username }
+            }).catch(e => console.warn('Pusher friend request failed:', e.message));
+        }
+
+        res.json({ message: `Solicitud de amistad enviada a ${targetUser.username}.`, friendship: data });
+    } catch (err) {
+        console.error('Error al enviar solicitud de amistad:', err);
+        res.status(500).json({ message: 'Error al enviar solicitud.' });
+    }
+});
+
+// Aceptar solicitud de amistad
+app.post('/api/friends/accept', loginRequired, async (req, res) => {
+    const { friend_id } = req.body;
+    const userId = req.user.id;
+
+    try {
+        const { data, error } = await supabase
+            .from('friendships')
+            .update({ status: 'accepted' })
+            .eq('user_id_1', friend_id)
+            .eq('user_id_2', userId)
+            .select()
+            .single();
+
+        if (error || !data) {
+            return res.status(404).json({ message: 'Solicitud no encontrada.' });
+        }
+
+        if (pusher) {
+            pusher.trigger(`user-${friend_id}`, 'friend-accepted', {
+                by: { id: userId, username: req.user.username }
+            }).catch(e => console.warn('Pusher accept failed:', e.message));
+        }
+
+        res.json({ message: 'Solicitud de amistad aceptada.' });
+    } catch (err) {
+        console.error('Error al aceptar amistad:', err);
+        res.status(500).json({ message: 'Error al aceptar la solicitud.' });
+    }
+});
+
+// Eliminar amigo o rechazar solicitud
+app.post('/api/friends/remove', loginRequired, async (req, res) => {
+    const { friend_id } = req.body;
+    const userId = req.user.id;
+
+    try {
+        await supabase
+            .from('friendships')
+            .delete()
+            .or(`and(user_id_1.eq.${userId},user_id_2.eq.${friend_id}),and(user_id_1.eq.${friend_id},user_id_2.eq.${userId})`);
+
+        res.json({ message: 'Amigo eliminado correctamente.' });
+    } catch (err) {
+        console.error('Error al eliminar amigo:', err);
+        res.status(500).json({ message: 'Error al procesar la solicitud.' });
+    }
+});
+
+// ==========================================
+// --- RUTAS DE GCHAT (MENSAJERÍA PRIVADA) ---
+// ==========================================
+
+// Obtener historial de mensajes con un amigo
+app.get('/api/gchat/history/:friendId', loginRequired, async (req, res) => {
+    const userId = req.user.id;
+    const friendId = req.params.friendId;
+    const roomKey = [userId, friendId].sort().join('-');
+
+    try {
+        // Consultar historial en Supabase o memoria
+        const { data: messages, error } = await supabase
+            .from('messages')
+            .select('*')
+            .or(`and(sender_id.eq.${userId},receiver_id.eq.${friendId}),and(sender_id.eq.${friendId},receiver_id.eq.${userId})`)
+            .order('created_at', { ascending: true })
+            .limit(50);
+
+        if (!error && messages) {
+            return res.json(messages);
+        }
+
+        // Fallback en memoria
+        return res.json(mockData.chatHistory[roomKey] || []);
+    } catch (err) {
+        return res.json(mockData.chatHistory[roomKey] || []);
+    }
+});
+
+// Enviar mensaje a un amigo
+app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
+    const senderId = req.user.id;
+    const receiverId = req.params.recipientId;
+    const { message } = req.body;
+
+    if (!message || message.trim() === '') {
+        return res.status(400).json({ message: 'El mensaje no puede estar vacío.' });
+    }
+
+    const newMessage = {
+        id: Date.now(),
+        sender_id: senderId,
+        receiver_id: receiverId,
+        sender_username: req.user.username,
+        message: message.trim(),
+        created_at: new Date().toISOString()
+    };
+
+    // Guardar en Supabase si la tabla existe
+    try {
+        await supabase.from('messages').insert([newMessage]);
+    } catch (err) {
+        console.warn('Could not persist message to Supabase, keeping in memory:', err.message);
+    }
+
+    // Guardar en memoria de respaldo
+    const roomKey = [senderId, receiverId].sort().join('-');
+    if (!mockData.chatHistory[roomKey]) mockData.chatHistory[roomKey] = [];
+    mockData.chatHistory[roomKey].push(newMessage);
+
+    // Emitir con Pusher
+    if (pusher) {
+        const channelName = `chat-${roomKey}`;
+        pusher.trigger(channelName, 'new-message', newMessage)
+            .catch(e => console.warn('Pusher chat send failed:', e.message));
+
+        // Notificar también al canal personal del destinatario
+        pusher.trigger(`user-${receiverId}`, 'chat-notification', {
+            from: req.user.username,
+            senderId,
+            message: newMessage.message
+        }).catch(e => console.warn('Pusher notify failed:', e.message));
+    }
+
+    res.status(201).json(newMessage);
+});
+
+// ==========================================
+// --- RUTAS DE ADMINISTRACIÓN ---
+// ==========================================
+
+app.get('/api/admin/users', loginRequired, adminRequired, async (req, res) => {
+    try {
+        const { data: users, error } = await supabase
+            .from('users')
+            .select('id, username, nickname, role, is_admin, created_at, gcoins, play_time_seconds, status')
+            .order('created_at', { ascending: false });
+
+        if (error) throw error;
+        res.json(users);
+    } catch (err) {
+        console.error('Error al obtener usuarios para admin:', err);
+        res.status(500).json({ message: 'Error al obtener usuarios.' });
+    }
+});
+
+app.get('/api/admin/stats', loginRequired, adminRequired, async (req, res) => {
+    try {
+        const { count: totalUsers } = await supabase.from('users').select('*', { count: 'exact', head: true });
+        res.json({
+            total_users: totalUsers || 0,
+            server_status: 'Online',
+            version: '2.0.0'
+        });
+    } catch (err) {
+        res.status(500).json({ message: 'Error al obtener estadísticas.' });
+    }
+});
 
 module.exports = { app, loginRequired, adminRequired, publicEndpoint };
