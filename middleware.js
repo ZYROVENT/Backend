@@ -717,11 +717,12 @@ app.post('/api/friends/add', loginRequired, async (req, res) => {
             return res.status(400).json({ message: 'Ya existe una solicitud o relación con este usuario.' });
         }
 
-        // Notificar en tiempo real con Pusher
+        // Notificar en tiempo real con Pusher (por ID y por username)
         if (pusher) {
-            pusher.trigger(`user-${targetUser.id}`, 'friend-request', {
-                from: { id: userId, username: req.user.username }
-            }).catch(e => console.warn('Pusher friend request failed:', e.message));
+            const payload = { from: { id: userId, username: req.user.username }, targetUsername: targetUser.username };
+            pusher.trigger(`user-${targetUser.id}`, 'friend-request', payload).catch(e => console.warn('Pusher ID notify failed:', e.message));
+            pusher.trigger(`user-${targetUser.username}`, 'friend-request', payload).catch(e => console.warn('Pusher username notify failed:', e.message));
+            pusher.trigger('global-friends-channel', 'friend-updated', {}).catch(() => {});
         }
 
         res.json({ message: `Solicitud de amistad enviada a ${targetUser.username}.`, friendship: data });
@@ -750,9 +751,9 @@ app.post('/api/friends/accept', loginRequired, async (req, res) => {
         }
 
         if (pusher) {
-            pusher.trigger(`user-${friend_id}`, 'friend-accepted', {
-                by: { id: userId, username: req.user.username }
-            }).catch(e => console.warn('Pusher accept failed:', e.message));
+            const payload = { by: { id: userId, username: req.user.username } };
+            pusher.trigger(`user-${friend_id}`, 'friend-accepted', payload).catch(e => console.warn('Pusher accept failed:', e.message));
+            pusher.trigger('global-friends-channel', 'friend-updated', {}).catch(() => {});
         }
 
         res.json({ message: 'Solicitud de amistad aceptada.' });
