@@ -256,7 +256,38 @@ app.post('/api/auth/register', async (req, res) => {
     }
 });
 
-// Inicio de sesión
+// Verificación de credenciales (Paso 1 del Login)
+app.post('/api/auth/check_credentials', async (req, res) => {
+    const { username, password } = req.body;
+
+    if (!username || !password) {
+        return res.status(400).json({ message: 'Usuario y contraseña son requeridos.' });
+    }
+
+    try {
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('id, username, password_hash')
+            .eq('username', username)
+            .maybeSingle();
+
+        if (error || !user) {
+            return res.status(401).json({ message: 'El usuario no existe o las credenciales son incorrectas.' });
+        }
+
+        const isMatch = await bcrypt.compare(password, user.password_hash);
+        if (!isMatch) {
+            return res.status(401).json({ message: 'Contraseña incorrecta.' });
+        }
+
+        res.json({ message: 'Credenciales válidas.', success: true });
+    } catch (err) {
+        console.error('Error en check_credentials:', err);
+        res.status(500).json({ message: 'Error interno en el servidor.' });
+    }
+});
+
+// Inicio de sesión (Paso 2 con código de seguridad)
 app.post('/api/auth/login', async (req, res) => {
     const { username, password, security_code } = req.body;
 
@@ -857,6 +888,83 @@ app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
     }
 
     res.status(201).json(newMessage);
+});
+
+// ==========================================
+// --- RUTAS DE TIENDA Y RECOMPENSAS ---
+// ==========================================
+
+// Reclamar regalo diario (50 GCoins)
+app.post('/api/shop/claim_daily_reward', loginRequired, async (req, res) => {
+    try {
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('gcoins')
+            .eq('id', req.user.id)
+            .single();
+
+        if (error || !user) {
+            return res.status(404).json({ message: 'Usuario no encontrado.' });
+        }
+
+        const newBalance = (user.gcoins || 0) + 50;
+        await supabase
+            .from('users')
+            .update({ gcoins: newBalance })
+            .eq('id', req.user.id);
+
+        res.json({
+            message: '¡Has reclamado 50 GCoins con éxito!',
+            prize: 50,
+            new_balance: newBalance
+        });
+    } catch (err) {
+        console.error('Error al reclamar recompensa diaria:', err);
+        res.status(500).json({ message: 'Error al procesar la recompensa diaria.' });
+    }
+});
+
+// Registrar premio de la ruleta
+app.post('/api/shop/spin_roulette', loginRequired, async (req, res) => {
+    const { prize_amount } = req.body;
+    const prize = parseInt(prize_amount) || 0;
+
+    try {
+        const { data: user, error } = await supabase
+            .from('users')
+            .select('gcoins')
+            .eq('id', req.user.id)
+            .single();
+
+        if (error || !user) {
+            return res.status(404).json({ message: 'Usuario no encontrado.' });
+        }
+
+        const newBalance = Math.max(0, (user.gcoins || 0) + prize);
+        await supabase
+            .from('users')
+            .update({ gcoins: newBalance })
+            .eq('id', req.user.id);
+
+        res.json({
+            message: `¡Has ganado ${prize} GCoins!`,
+            prize,
+            new_balance: newBalance
+        });
+    } catch (err) {
+        console.error('Error en giro de ruleta:', err);
+        res.status(500).json({ message: 'Error al procesar el premio de la ruleta.' });
+    }
+});
+
+// Obtener paquetes oficiales de GCoins
+app.get('/api/shop/packages', (req, res) => {
+    res.json([
+        { id: 'pack-500', name: 'Pack Principiante', gcoins: 500, bonus: 0, price_usd: '1.99', popular: false, icon: 'fa-coins' },
+        { id: 'pack-1500', name: 'Pack Aventurero', gcoins: 1500, bonus: 200, price_usd: '4.99', popular: true, icon: 'fa-gem' },
+        { id: 'pack-5000', name: 'Pack Maestro PvP', gcoins: 5000, bonus: 1000, price_usd: '12.99', popular: false, icon: 'fa-fire' },
+        { id: 'pack-12000', name: 'Pack Supremo', gcoins: 12000, bonus: 3500, price_usd: '24.99', popular: false, icon: 'fa-crown' }
+    ]);
 });
 
 // ==========================================
