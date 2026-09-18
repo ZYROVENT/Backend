@@ -664,7 +664,11 @@ app.get('/api/friends', loginRequired, async (req, res) => {
     const userId = req.user.id;
 
     try {
-        const { data: friendships, error } = await supabase
+        // Intento 1: Traer con relaciones si PostgREST detectó las FKs
+        let friendships = null;
+        let queryError = null;
+
+        const resWithRel = await supabase
             .from('friendships')
             .select(`
                 id,
@@ -676,9 +680,40 @@ app.get('/api/friends', loginRequired, async (req, res) => {
             `)
             .or(`user_id_1.eq.${userId},user_id_2.eq.${userId}`);
 
-        if (error) {
-            console.warn('Friendships query warning (using empty list):', error.message);
-            return res.json({ friends: [], pending: [], sent: [] });
+        if (!resWithRel.error && resWithRel.data) {
+            friendships = resWithRel.data;
+        } else {
+            // Intento 2: Fallback plano (sin join forzado de PostgREST)
+            const resPlain = await supabase
+                .from('friendships')
+                .select('id, status, user_id_1, user_id_2')
+                .or(`user_id_1.eq.${userId},user_id_2.eq.${userId}`);
+
+            if (resPlain.error) {
+                console.warn('Advertencia al consultar amistades:', resPlain.error.message);
+                return res.json({ friends: [], pending: [], sent: [] });
+            }
+
+            const rawFriendships = resPlain.data || [];
+            if (rawFriendships.length === 0) {
+                return res.json({ friends: [], pending: [], sent: [] });
+            }
+
+            // Extraer IDs únicos de los otros usuarios
+            const otherIds = [...new Set(rawFriendships.map(f => String(f.user_id_1) === String(userId) ? f.user_id_2 : f.user_id_1))];
+            const { data: usersData } = await supabase
+                .from('users')
+                .select('id, username, nickname, avatar_url, profile_picture_url, status, role')
+                .in('id', otherIds);
+
+            const userMap = {};
+            (usersData || []).forEach(u => { userMap[String(u.id)] = u; });
+
+            friendships = rawFriendships.map(f => ({
+                ...f,
+                user1: String(f.user_id_1) === String(userId) ? null : userMap[String(f.user_id_1)],
+                user2: String(f.user_id_2) === String(userId) ? null : userMap[String(f.user_id_2)]
+            }));
         }
 
         const friends = [];
@@ -733,6 +768,35 @@ app.post('/api/friends/add', loginRequired, async (req, res) => {
             return res.status(400).json({ message: 'No puedes agregarte a ti mismo como amigo.' });
         }
 
+        // Comprobar si ya existe alguna relación en cualquier dirección
+        const { data: existing } = await supabase
+            .from('friendships')
+            .select('id, status, user_id_1, user_id_2')
+            .or(`and(user_id_1.eq.${userId},user_id_2.eq.${targetUser.id}),and(user_id_1.eq.${targetUser.id},user_id_2.eq.${userId})`)
+            .maybeSingle();
+
+        if (existing) {
+            if (existing.status === 'accepted') {
+                return res.status(400).json({ message: `${targetUser.username} ya es tu amigo.` });
+            }
+            if (String(existing.user_id_1) === String(userId)) {
+                return res.status(400).json({ message: 'Ya has enviado una solicitud a este usuario.' });
+            } else {
+                // Si la otra persona ya me había enviado solicitud, la aceptamos automáticamente
+                await supabase
+                    .from('friendships')
+                    .update({ status: 'accepted' })
+                    .eq('id', existing.id);
+
+                if (pusher) {
+                    const payload = { by: { id: userId, username: req.user.username } };
+                    pusher.trigger(`user-${targetUser.id}`, 'friend-accepted', payload).catch(() => {});
+                    pusher.trigger('global-friends-channel', 'friend-updated', {}).catch(() => {});
+                }
+                return res.json({ message: `¡Solicitud mutua aceptada! Ahora eres amigo de ${targetUser.username}.` });
+            }
+        }
+
         // Insertar relación de amistad pendiente
         const { data, error } = await supabase
             .from('friendships')
@@ -745,7 +809,7 @@ app.post('/api/friends/add', loginRequired, async (req, res) => {
             .single();
 
         if (error) {
-            return res.status(400).json({ message: 'Ya existe una solicitud o relación con este usuario.' });
+            return res.status(400).json({ message: 'Error al registrar la solicitud de amistad.' });
         }
 
         // Notificar en tiempo real con Pusher (por ID y por username)
