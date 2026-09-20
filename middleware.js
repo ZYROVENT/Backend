@@ -221,30 +221,30 @@ app.post('/api/auth/register', async (req, res) => {
     try {
         const password_hash = await bcrypt.hash(password, SALT_ROUNDS);
 
+        const newUserData = {
+            username,
+            password_hash,
+            security_code: String(security_code),
+            account_type: 'standard',
+            nickname: username,
+            role: 'Jugador',
+            gcoins: 100,
+            play_time_seconds: 0,
+            register_complete: 'yes'
+        };
+
         const { data, error } = await supabase
             .from('users')
-            .insert([{
-                username,
-                password_hash,
-                security_code: String(security_code),
-                account_type: 'standard',
-                nickname: username,
-                role: 'Jugador',
-                gcoins: 100,
-                status: 'Disponible',
-                play_time_seconds: 0,
-                show_online: true,
-                allow_requests: true,
-                register_complete: 'yes'
-            }])
+            .insert([newUserData])
             .select()
             .single();
 
         if (error) {
+            console.error('Error Supabase al insertar usuario:', error);
             if (error.code === '23505') {
                 return res.status(409).json({ message: 'El nombre de usuario ya está en uso.' });
             }
-            throw error;
+            return res.status(400).json({ message: error.message || 'Error al guardar el usuario en la base de datos.' });
         }
 
         const token = jwt.sign({ id: data.id, username: data.username, role: data.role }, JWT_SECRET, { expiresIn: '7d' });
@@ -252,7 +252,7 @@ app.post('/api/auth/register', async (req, res) => {
 
     } catch (error) {
         console.error('Error en el registro:', error);
-        res.status(500).json({ message: 'Error interno al procesar el registro.' });
+        res.status(500).json({ message: error.message || 'Error interno al procesar el registro.' });
     }
 });
 
@@ -341,12 +341,17 @@ app.post('/api/auth/login', async (req, res) => {
 app.get('/login/google', (req, res) => {
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const host = req.get('host');
-    const redirectUri = `${protocol}://${host}/auth/google/callback`;
+    const returnTo = req.query.return_to || req.headers.referer || '';
+    const redirectUri = `${protocol}://${host}/auth/google/callback?return_to=${encodeURIComponent(returnTo)}`;
     res.send(getNeonLoaderHtml('Google', redirectUri));
 });
 
 app.get('/auth/google/callback', async (req, res) => {
     try {
+        const returnTo = req.query.return_to || '';
+        const targetHost = returnTo ? new URL(returnTo).origin : '';
+        const targetDashboard = targetHost ? `${targetHost}/src/html/dashboard.html` : '/src/html/dashboard.html';
+
         const demoEmail = `gamer_${Math.floor(1000 + Math.random() * 9000)}`;
         let { data: user } = await supabase.from('users').select('*').eq('username', demoEmail).maybeSingle();
 
@@ -364,8 +369,9 @@ app.get('/auth/google/callback', async (req, res) => {
         }
 
         const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-        res.send(getSuccessHtml(token, '/src/html/dashboard.html'));
+        res.send(getSuccessHtml(token, targetDashboard));
     } catch (error) {
+        console.error('Error OAuth Google:', error);
         res.status(500).send('<h1>Error de autenticación Google</h1>');
     }
 });
@@ -373,12 +379,17 @@ app.get('/auth/google/callback', async (req, res) => {
 app.get('/login/microsoft', (req, res) => {
     const protocol = req.headers['x-forwarded-proto'] || req.protocol;
     const host = req.get('host');
-    const redirectUri = `${protocol}://${host}/auth/microsoft/callback`;
+    const returnTo = req.query.return_to || req.headers.referer || '';
+    const redirectUri = `${protocol}://${host}/auth/microsoft/callback?return_to=${encodeURIComponent(returnTo)}`;
     res.send(getNeonLoaderHtml('Microsoft', redirectUri));
 });
 
 app.get('/auth/microsoft/callback', async (req, res) => {
     try {
+        const returnTo = req.query.return_to || '';
+        const targetHost = returnTo ? new URL(returnTo).origin : '';
+        const targetDashboard = targetHost ? `${targetHost}/src/html/dashboard.html` : '/src/html/dashboard.html';
+
         const demoEmail = `msft_${Math.floor(1000 + Math.random() * 9000)}`;
         let { data: user } = await supabase.from('users').select('*').eq('username', demoEmail).maybeSingle();
 
@@ -396,8 +407,9 @@ app.get('/auth/microsoft/callback', async (req, res) => {
         }
 
         const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
-        res.send(getSuccessHtml(token, '/src/html/dashboard.html'));
+        res.send(getSuccessHtml(token, targetDashboard));
     } catch (error) {
+        console.error('Error OAuth Microsoft:', error);
         res.status(500).send('<h1>Error de autenticación Microsoft</h1>');
     }
 });
