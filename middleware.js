@@ -967,11 +967,28 @@ async function isAcceptedFriendship(userId, friendId) {
     return Boolean(data && data.length);
 }
 
+let gchatReplyColumnsWarningLogged = false;
+
+function isMissingGChatReplyColumns(error) {
+    const errorText = `${error?.message || ''} ${error?.details || ''}`;
+    return ['42703', 'PGRST204', 'PGRST202'].includes(error?.code) &&
+        /reply_to_(message_id|username|message)/i.test(errorText);
+}
+
+function logMissingGChatReplyColumns() {
+    if (gchatReplyColumnsWarningLogged) return;
+    gchatReplyColumnsWarningLogged = true;
+    console.warn('Las columnas de respuestas de GChat no existen en Supabase; historial y mensajes normales seguirán funcionando. Aplica la migración 20261005_gchat_message_replies.sql para habilitar respuestas.');
+}
+
 function normalizeGChatMessage(message) {
     return {
         ...message,
         content: message.message,
-        recipient_id: message.receiver_id
+        recipient_id: message.receiver_id,
+        reply_to_message_id: message.reply_to_message_id ?? null,
+        reply_to_username: message.reply_to_username ?? null,
+        reply_to_message: message.reply_to_message ?? null
     };
 }
 
@@ -990,13 +1007,24 @@ app.get('/api/gchat/history/:friendId', loginRequired, async (req, res) => {
         if (!await isAcceptedFriendship(userId, friendId)) {
             return res.status(403).json({ message: 'Solo puedes abrir chats con amigos aceptados.' });
         }
-        const { data: messages, error } = await supabaseAdmin
+        let { data: messages, error } = await supabaseAdmin
             .from('messages')
             .select('id, sender_id, receiver_id, sender_username, message, created_at, reply_to_message_id, reply_to_username, reply_to_message')
             .or(`and(sender_id.eq.${userId},receiver_id.eq.${friendId}),and(sender_id.eq.${friendId},receiver_id.eq.${userId})`)
             .order('created_at', { ascending: true })
             .limit(50);
 
+        if (isMissingGChatReplyColumns(error)) {
+            logMissingGChatReplyColumns();
+            const legacyHistory = await supabaseAdmin
+                .from('messages')
+                .select('id, sender_id, receiver_id, sender_username, message, created_at')
+                .or(`and(sender_id.eq.${userId},receiver_id.eq.${friendId}),and(sender_id.eq.${friendId},receiver_id.eq.${userId})`)
+                .order('created_at', { ascending: true })
+                .limit(50);
+            messages = legacyHistory.data;
+            error = legacyHistory.error;
+        }
         if (error) throw error;
         return res.json((messages || []).map(normalizeGChatMessage));
     } catch (err) {
@@ -1050,17 +1078,27 @@ app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
                 reply_to_message: repliedMessage.message
             };
         }
+        const insertRecord = {
+            sender_id: senderId,
+            receiver_id: receiverId,
+            sender_username: req.user.username,
+            message: cleanMessage,
+            ...(replySnapshot || {})
+        };
+        const selectFields = replySnapshot
+            ? 'id, sender_id, receiver_id, sender_username, message, created_at, reply_to_message_id, reply_to_username, reply_to_message'
+            : 'id, sender_id, receiver_id, sender_username, message, created_at';
         const { data, error } = await supabaseAdmin
             .from('messages')
-            .insert([{
-                sender_id: senderId,
-                receiver_id: receiverId,
-                sender_username: req.user.username,
-                message: cleanMessage,
-                ...replySnapshot
-            }])
-            .select('id, sender_id, receiver_id, sender_username, message, created_at, reply_to_message_id, reply_to_username, reply_to_message')
+            .insert([insertRecord])
+            .select(selectFields)
             .single();
+        if (isMissingGChatReplyColumns(error)) {
+            logMissingGChatReplyColumns();
+            return res.status(503).json({
+                message: 'Las respuestas del chat todavía no están habilitadas en la base de datos. El administrador debe aplicar la migración de respuestas.'
+            });
+        }
         if (error) throw error;
 
         const normalizedMessage = normalizeGChatMessage(data);
