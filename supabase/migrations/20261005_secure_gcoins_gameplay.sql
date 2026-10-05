@@ -1,5 +1,8 @@
 ALTER TABLE public.users
-    ADD COLUMN IF NOT EXISTS last_daily_reward_at timestamptz;
+    ADD COLUMN IF NOT EXISTS last_daily_reward_at timestamptz,
+    ADD COLUMN IF NOT EXISTS status text NOT NULL DEFAULT 'Disponible',
+    ADD COLUMN IF NOT EXISTS show_online boolean NOT NULL DEFAULT true,
+    ADD COLUMN IF NOT EXISTS allow_requests boolean NOT NULL DEFAULT true;
 
 REVOKE INSERT, UPDATE, DELETE ON TABLE public.users FROM PUBLIC, anon, authenticated;
 REVOKE ALL PRIVILEGES ON TABLE public.friendships, public.messages FROM PUBLIC, anon, authenticated;

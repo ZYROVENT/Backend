@@ -5,7 +5,10 @@
 Configure `SUPABASE_SERVICE_ROLE_KEY` as a private environment variable in the
 backend deployment (for example, Render) before deploying these backend changes
 and running `supabase/migrations/20261005_secure_gcoins_gameplay.sql` in the
-Supabase SQL Editor. Deploy the backend and migration together: registration,
+Supabase SQL Editor. If you have already executed an earlier version of this
+migration, run the updated SQL again; its schema changes are idempotent. It adds
+the profile status and privacy columns used by the social APIs. Deploy the
+backend and migration together: registration,
 OAuth account creation, profile changes, social operations, shop purchases,
 rewards, and gameplay synchronization now use the authenticated backend's
 service-role client. The migration blocks direct client writes to `users` and
