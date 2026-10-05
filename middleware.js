@@ -9,7 +9,7 @@ const Pusher = require('pusher');
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '7mb' }));
 
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_dev';
 const SALT_ROUNDS = 10;
@@ -45,6 +45,26 @@ const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
+const launcherAchievementIds = new Set([
+    'first_download',
+    'first_launch',
+    'melomano',
+    'rey_del_pop',
+    'socializer',
+    'stylist',
+    'configurator',
+    'mod_hunter',
+    'veteran',
+    'explorer',
+    'cleaner',
+    'server_adder',
+    'ram_master',
+    'old_school',
+    'bg_collector',
+    'fullscreen_king',
+    'modloader_expert',
+    'safety_first'
+]);
 
 // In-memory fallback caches
 const mockData = {
@@ -461,6 +481,51 @@ app.get('/api/user_info', loginRequired, async (req, res) => {
     }
 });
 
+app.get('/api/achievements/me', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La sincronización de logros no está configurada.' });
+    }
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('user_achievements')
+            .select('achievement_id, unlocked_at')
+            .eq('user_id', req.user.id)
+            .order('unlocked_at', { ascending: true });
+        if (error) throw error;
+        return res.json(data || []);
+    } catch (err) {
+        console.error('Error al cargar logros del usuario:', err);
+        return res.status(500).json({ message: 'No se pudieron cargar los logros. Verifica la migración user_achievements.' });
+    }
+});
+
+app.post('/api/achievements/sync', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La sincronización de logros no está configurada.' });
+    }
+    const achievementIds = req.body?.achievement_ids;
+    if (!Array.isArray(achievementIds) || achievementIds.length > launcherAchievementIds.size ||
+        achievementIds.some(id => typeof id !== 'string' || !launcherAchievementIds.has(id))) {
+        return res.status(400).json({ message: 'La lista de logros no es válida.' });
+    }
+    if (!achievementIds.length) return res.json({ success: true, synced: 0 });
+
+    try {
+        const rows = [...new Set(achievementIds)].map(achievement_id => ({
+            user_id: req.user.id,
+            achievement_id
+        }));
+        const { error } = await supabaseAdmin
+            .from('user_achievements')
+            .upsert(rows, { onConflict: 'user_id,achievement_id', ignoreDuplicates: true });
+        if (error) throw error;
+        return res.json({ success: true, synced: rows.length });
+    } catch (err) {
+        console.error('Error al sincronizar logros del usuario:', err);
+        return res.status(500).json({ message: 'No se pudieron sincronizar los logros. Verifica la migración user_achievements.' });
+    }
+});
+
 // Buscar usuarios en la base de datos (Real-time search)
 app.get('/api/users/search', loginRequired, async (req, res) => {
     if (!supabaseAdmin) {
@@ -551,6 +616,17 @@ app.post('/api/user/update_profile', loginRequired, upload.single('avatar_file')
     }
 
     if (avatar_url) {
+        if (typeof avatar_url !== 'string' || avatar_url.length > 7 * 1024 * 1024) {
+            return res.status(400).json({ message: 'La imagen de perfil excede el tamaño permitido.' });
+        }
+        const isRemoteAvatar = /^https:\/\//i.test(avatar_url);
+        const dataUriMatch = avatar_url.match(/^data:image\/(png|jpeg|gif);base64,([a-z0-9+/]+={0,2})$/i);
+        if (!isRemoteAvatar && !dataUriMatch) {
+            return res.status(400).json({ message: 'La foto de perfil debe ser HTTPS o una imagen PNG, JPG o GIF válida.' });
+        }
+        if (dataUriMatch && Buffer.from(dataUriMatch[2], 'base64').length > 5 * 1024 * 1024) {
+            return res.status(400).json({ message: 'La imagen de perfil no puede superar 5 MB.' });
+        }
         updateData.profile_picture_url = avatar_url;
     }
 
