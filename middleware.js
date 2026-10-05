@@ -712,6 +712,10 @@ app.post('/api/user/delete_account', loginRequired, async (req, res) => {
 // ==========================================
 
 const isUuid = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+const isValidMessageId = value => {
+    const messageId = String(value ?? '');
+    return /^[1-9]\d{0,18}$/.test(messageId) && BigInt(messageId) <= 9223372036854775807n;
+};
 
 // Obtener amigos y solicitudes
 app.get('/api/friends', loginRequired, async (req, res) => {
@@ -1053,7 +1057,7 @@ app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
     if (cleanMessage.length > 1000) {
         return res.status(400).json({ message: 'El mensaje no puede superar los 1000 caracteres.' });
     }
-    if (replyToMessageId !== null && !isUuid(replyToMessageId)) {
+    if (replyToMessageId !== null && !isValidMessageId(replyToMessageId)) {
         return res.status(400).json({ message: 'El mensaje citado no es válido.' });
     }
     try {
