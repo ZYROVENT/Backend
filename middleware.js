@@ -967,6 +967,14 @@ async function isAcceptedFriendship(userId, friendId) {
     return Boolean(data && data.length);
 }
 
+function normalizeGChatMessage(message) {
+    return {
+        ...message,
+        content: message.message,
+        recipient_id: message.receiver_id
+    };
+}
+
 // Obtener historial de mensajes con un amigo
 app.get('/api/gchat/history/:friendId', loginRequired, async (req, res) => {
     if (!supabaseAdmin) {
@@ -990,7 +998,7 @@ app.get('/api/gchat/history/:friendId', loginRequired, async (req, res) => {
             .limit(50);
 
         if (error) throw error;
-        return res.json(messages || []);
+        return res.json((messages || []).map(normalizeGChatMessage));
     } catch (err) {
         console.error('Error al cargar historial de GChat:', err);
         return res.status(500).json({ message: 'No se pudo cargar el historial del chat.' });
@@ -1004,7 +1012,7 @@ app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
     }
     const senderId = req.user.id;
     const receiverId = req.params.recipientId;
-    const { message } = req.body;
+    const message = req.body?.message ?? req.body?.content;
 
     if (!isUuid(receiverId)) {
         return res.status(400).json({ message: 'Identificador de amistad no válido.' });
@@ -1032,17 +1040,19 @@ app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
             .single();
         if (error) throw error;
 
+        const normalizedMessage = normalizeGChatMessage(data);
         const roomKey = [senderId, receiverId].sort().join('-');
         if (pusher) {
-            pusher.trigger(`chat-${roomKey}`, 'new-message', data)
+            pusher.trigger(`chat-${roomKey}`, 'new-message', normalizedMessage)
                 .catch(e => console.warn('Pusher chat send failed:', e.message));
             pusher.trigger(`user-${receiverId}`, 'chat-notification', {
                 from: req.user.username,
                 senderId,
-                message: data.message
+                message: normalizedMessage.message,
+                content: normalizedMessage.content
             }).catch(e => console.warn('Pusher notify failed:', e.message));
         }
-        return res.status(201).json(data);
+        return res.status(201).json(normalizedMessage);
     } catch (err) {
         console.error('Error al enviar mensaje de GChat:', err);
         return res.status(500).json({ message: 'No se pudo guardar el mensaje.' });
