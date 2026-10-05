@@ -18,6 +18,13 @@ const SALT_ROUNDS = 10;
 const supabaseUrl = process.env.SUPABASE_URL || 'https://ouqpeojilykkrmatijxp.supabase.co';
 const supabaseKey = process.env.SUPABASE_ANON_KEY || 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im91cXBlb2ppbHlra3JtYXRpanhwIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Njk5OTc3NjgsImV4cCI6MjA4NTU3Mzc2OH0.cI5AV0N-F1B2tqvBUKgOz0T2XCF3i56K23spLb3sHHY';
 const supabase = createClient(supabaseUrl, supabaseKey);
+const supabaseAdminKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseAdmin = supabaseAdminKey
+    ? createClient(supabaseUrl, supabaseAdminKey, {
+        auth: { autoRefreshToken: false, persistSession: false }
+    })
+    : null;
+const gameplayHeartbeats = new Map();
 
 // --- Configuración de Pusher (Real-time notifications & chat) ---
 let pusher = null;
@@ -217,6 +224,9 @@ app.post('/api/auth/register', async (req, res) => {
     if (String(security_code).length !== 6) {
         return res.status(400).json({ message: 'El código de seguridad debe tener 6 dígitos.' });
     }
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'El registro seguro no está configurado.' });
+    }
 
     try {
         const password_hash = await bcrypt.hash(password, SALT_ROUNDS);
@@ -233,7 +243,7 @@ app.post('/api/auth/register', async (req, res) => {
             register_complete: 'yes'
         };
 
-        const { data, error } = await supabase
+        const { data, error } = await supabaseAdmin
             .from('users')
             .insert([newUserData])
             .select()
@@ -348,15 +358,18 @@ app.get('/login/google', (req, res) => {
 
 app.get('/auth/google/callback', async (req, res) => {
     try {
+        if (!supabaseAdmin) {
+            return res.status(503).send('El inicio de sesión no está configurado.');
+        }
         const returnTo = req.query.return_to || '';
         const targetHost = returnTo ? new URL(returnTo).origin : '';
         const targetDashboard = targetHost ? `${targetHost}/src/html/dashboard.html` : '/src/html/dashboard.html';
 
         const demoEmail = `gamer_${Math.floor(1000 + Math.random() * 9000)}`;
-        let { data: user } = await supabase.from('users').select('*').eq('username', demoEmail).maybeSingle();
+        let { data: user } = await supabaseAdmin.from('users').select('*').eq('username', demoEmail).maybeSingle();
 
         if (!user) {
-            const { data: newUser } = await supabase.from('users').insert({
+            const { data: newUser, error } = await supabaseAdmin.from('users').insert({
                 username: demoEmail,
                 nickname: demoEmail,
                 account_type: 'google',
@@ -365,7 +378,8 @@ app.get('/auth/google/callback', async (req, res) => {
                 gcoins: 100,
                 status: 'Disponible'
             }).select().single();
-            user = newUser || { id: Date.now(), username: demoEmail, role: 'Jugador' };
+            if (error || !newUser) throw error || new Error('No se pudo crear la cuenta.');
+            user = newUser;
         }
 
         const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
@@ -386,15 +400,18 @@ app.get('/login/microsoft', (req, res) => {
 
 app.get('/auth/microsoft/callback', async (req, res) => {
     try {
+        if (!supabaseAdmin) {
+            return res.status(503).send('El inicio de sesión no está configurado.');
+        }
         const returnTo = req.query.return_to || '';
         const targetHost = returnTo ? new URL(returnTo).origin : '';
         const targetDashboard = targetHost ? `${targetHost}/src/html/dashboard.html` : '/src/html/dashboard.html';
 
         const demoEmail = `msft_${Math.floor(1000 + Math.random() * 9000)}`;
-        let { data: user } = await supabase.from('users').select('*').eq('username', demoEmail).maybeSingle();
+        let { data: user } = await supabaseAdmin.from('users').select('*').eq('username', demoEmail).maybeSingle();
 
         if (!user) {
-            const { data: newUser } = await supabase.from('users').insert({
+            const { data: newUser, error } = await supabaseAdmin.from('users').insert({
                 username: demoEmail,
                 nickname: demoEmail,
                 account_type: 'microsoft',
@@ -403,7 +420,8 @@ app.get('/auth/microsoft/callback', async (req, res) => {
                 gcoins: 100,
                 status: 'Disponible'
             }).select().single();
-            user = newUser || { id: Date.now(), username: demoEmail, role: 'Jugador' };
+            if (error || !newUser) throw error || new Error('No se pudo crear la cuenta.');
+            user = newUser;
         }
 
         const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
@@ -481,6 +499,9 @@ app.get('/api/users/search', loginRequired, async (req, res) => {
 
 // Actualizar estado del usuario (Disponible, Ausente, Jugando)
 app.post('/api/user/status', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La actualización de estado no está configurada.' });
+    }
     const { status } = req.body;
     const validStatuses = ['Disponible', 'Ausente', 'Jugando'];
 
@@ -489,10 +510,11 @@ app.post('/api/user/status', loginRequired, async (req, res) => {
     }
 
     try {
-        await supabase
+        const { error } = await supabaseAdmin
             .from('users')
             .update({ status })
             .eq('id', req.user.id);
+        if (error) throw error;
 
         if (pusher) {
             pusher.trigger('user-status-channel', 'status-update', {
@@ -511,6 +533,9 @@ app.post('/api/user/status', loginRequired, async (req, res) => {
 
 // Actualizar perfil (Username y Avatar)
 app.post('/api/user/update_profile', loginRequired, upload.single('avatar_file'), async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La actualización de perfil no está configurada.' });
+    }
     const { username, avatar_url } = req.body;
     const updateData = {};
 
@@ -536,7 +561,7 @@ app.post('/api/user/update_profile', loginRequired, upload.single('avatar_file')
     }
 
     try {
-        const { data: updatedUser, error } = await supabase
+        const { data: updatedUser, error } = await supabaseAdmin
             .from('users')
             .update(updateData)
             .eq('id', req.user.id)
@@ -569,6 +594,9 @@ app.post('/api/user/update_profile', loginRequired, upload.single('avatar_file')
 
 // Actualizar contraseña
 app.post('/api/user/update_password', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La actualización de contraseña no está configurada.' });
+    }
     const { current_password, new_password } = req.body;
 
     if (!current_password || !new_password) {
@@ -596,10 +624,11 @@ app.post('/api/user/update_password', loginRequired, async (req, res) => {
         }
 
         const newHash = await bcrypt.hash(new_password, SALT_ROUNDS);
-        await supabase
+        const { error: updateError } = await supabaseAdmin
             .from('users')
             .update({ password_hash: newHash })
             .eq('id', req.user.id);
+        if (updateError) throw updateError;
 
         res.json({ message: 'Contraseña actualizada correctamente.' });
     } catch (err) {
@@ -610,6 +639,9 @@ app.post('/api/user/update_password', loginRequired, async (req, res) => {
 
 // Actualizar configuración de privacidad
 app.post('/api/user/privacy', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La actualización de privacidad no está configurada.' });
+    }
     const { show_online, allow_requests } = req.body;
     const updateData = {};
 
@@ -617,10 +649,11 @@ app.post('/api/user/privacy', loginRequired, async (req, res) => {
     if (typeof allow_requests === 'boolean') updateData.allow_requests = allow_requests;
 
     try {
-        await supabase
+        const { error } = await supabaseAdmin
             .from('users')
             .update(updateData)
             .eq('id', req.user.id);
+        if (error) throw error;
 
         res.json({ message: 'Ajustes de privacidad guardados.', privacy: updateData });
     } catch (err) {
@@ -631,10 +664,13 @@ app.post('/api/user/privacy', loginRequired, async (req, res) => {
 
 // Eliminar cuenta
 app.post('/api/user/delete_account', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La eliminación segura de cuentas no está configurada.' });
+    }
     const { password, security_code } = req.body;
 
     try {
-        const { data: user, error } = await supabase
+        const { data: user, error } = await supabaseAdmin
             .from('users')
             .select('password_hash, security_code')
             .eq('id', req.user.id)
@@ -656,9 +692,11 @@ app.post('/api/user/delete_account', loginRequired, async (req, res) => {
         }
 
         // Eliminar relaciones de amistad
-        await supabase.from('friendships').delete().or(`user_id_1.eq.${req.user.id},user_id_2.eq.${req.user.id}`);
+        const { error: friendshipsError } = await supabaseAdmin.from('friendships').delete().or(`user_id_1.eq.${req.user.id},user_id_2.eq.${req.user.id}`);
+        if (friendshipsError) throw friendshipsError;
         // Eliminar usuario
-        await supabase.from('users').delete().eq('id', req.user.id);
+        const { error: deleteError } = await supabaseAdmin.from('users').delete().eq('id', req.user.id);
+        if (deleteError) throw deleteError;
 
         res.json({ message: 'Cuenta eliminada exitosamente.' });
     } catch (err) {
@@ -671,8 +709,13 @@ app.post('/api/user/delete_account', loginRequired, async (req, res) => {
 // --- RUTAS DE AMIGOS Y SOCIAL ---
 // ==========================================
 
+const isUuid = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(String(value || ''));
+
 // Obtener amigos y solicitudes
 app.get('/api/friends', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'Las funciones de amistad no están configuradas.' });
+    }
     const userId = req.user.id;
 
     try {
@@ -680,7 +723,7 @@ app.get('/api/friends', loginRequired, async (req, res) => {
         let friendships = null;
         let queryError = null;
 
-        const resWithRel = await supabase
+        const resWithRel = await supabaseAdmin
             .from('friendships')
             .select(`
                 id,
@@ -696,14 +739,14 @@ app.get('/api/friends', loginRequired, async (req, res) => {
             friendships = resWithRel.data;
         } else {
             // Intento 2: Fallback plano (sin join forzado de PostgREST)
-            const resPlain = await supabase
+            const resPlain = await supabaseAdmin
                 .from('friendships')
                 .select('id, status, user_id_1, user_id_2')
                 .or(`user_id_1.eq.${userId},user_id_2.eq.${userId}`);
 
             if (resPlain.error) {
                 console.warn('Advertencia al consultar amistades:', resPlain.error.message);
-                return res.json({ friends: [], pending: [], sent: [] });
+                return res.status(500).json({ message: 'No se pudieron cargar las amistades.' });
             }
 
             const rawFriendships = resPlain.data || [];
@@ -713,10 +756,11 @@ app.get('/api/friends', loginRequired, async (req, res) => {
 
             // Extraer IDs únicos de los otros usuarios
             const otherIds = [...new Set(rawFriendships.map(f => String(f.user_id_1) === String(userId) ? f.user_id_2 : f.user_id_1))];
-            const { data: usersData } = await supabase
+            const { data: usersData, error: usersError } = await supabaseAdmin
                 .from('users')
                 .select('id, username, nickname, avatar_url, profile_picture_url, status, role')
                 .in('id', otherIds);
+            if (usersError) throw usersError;
 
             const userMap = {};
             (usersData || []).forEach(u => { userMap[String(u.id)] = u; });
@@ -753,22 +797,25 @@ app.get('/api/friends', loginRequired, async (req, res) => {
         res.json({ friends, pending, sent });
     } catch (err) {
         console.error('Error en /api/friends:', err);
-        res.json({ friends: [], pending: [], sent: [] });
+        res.status(500).json({ message: 'No se pudieron cargar las amistades.' });
     }
 });
 
 // Enviar solicitud de amistad
 app.post('/api/friends/add', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'Las funciones de amistad no están configuradas.' });
+    }
     const { username, friend_id } = req.body;
     const userId = req.user.id;
 
     try {
         let targetUser = null;
         if (friend_id) {
-            const { data } = await supabase.from('users').select('id, username').eq('id', friend_id).single();
+            const { data } = await supabaseAdmin.from('users').select('id, username').eq('id', friend_id).single();
             targetUser = data;
         } else if (username) {
-            const { data } = await supabase.from('users').select('id, username').eq('username', username).single();
+            const { data } = await supabaseAdmin.from('users').select('id, username').eq('username', username).single();
             targetUser = data;
         }
 
@@ -781,11 +828,12 @@ app.post('/api/friends/add', loginRequired, async (req, res) => {
         }
 
         // Comprobar si ya existe alguna relación en cualquier dirección
-        const { data: existing } = await supabase
+        const { data: existing, error: existingError } = await supabaseAdmin
             .from('friendships')
             .select('id, status, user_id_1, user_id_2')
             .or(`and(user_id_1.eq.${userId},user_id_2.eq.${targetUser.id}),and(user_id_1.eq.${targetUser.id},user_id_2.eq.${userId})`)
             .maybeSingle();
+        if (existingError) throw existingError;
 
         if (existing) {
             if (existing.status === 'accepted') {
@@ -795,10 +843,11 @@ app.post('/api/friends/add', loginRequired, async (req, res) => {
                 return res.status(400).json({ message: 'Ya has enviado una solicitud a este usuario.' });
             } else {
                 // Si la otra persona ya me había enviado solicitud, la aceptamos automáticamente
-                await supabase
+                const { error: acceptError } = await supabaseAdmin
                     .from('friendships')
                     .update({ status: 'accepted' })
                     .eq('id', existing.id);
+                if (acceptError) throw acceptError;
 
                 if (pusher) {
                     const payload = { by: { id: userId, username: req.user.username } };
@@ -810,7 +859,7 @@ app.post('/api/friends/add', loginRequired, async (req, res) => {
         }
 
         // Insertar relación de amistad pendiente
-        const { data, error } = await supabase
+        const { data, error } = await supabaseAdmin
             .from('friendships')
             .insert([{
                 user_id_1: userId,
@@ -841,11 +890,18 @@ app.post('/api/friends/add', loginRequired, async (req, res) => {
 
 // Aceptar solicitud de amistad
 app.post('/api/friends/accept', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'Las funciones de amistad no están configuradas.' });
+    }
     const { friend_id } = req.body;
     const userId = req.user.id;
 
+    if (!isUuid(friend_id)) {
+        return res.status(400).json({ message: 'Identificador de amistad no válido.' });
+    }
+
     try {
-        const { data, error } = await supabase
+        const { data, error } = await supabaseAdmin
             .from('friendships')
             .update({ status: 'accepted' })
             .eq('user_id_1', friend_id)
@@ -872,14 +928,22 @@ app.post('/api/friends/accept', loginRequired, async (req, res) => {
 
 // Eliminar amigo o rechazar solicitud
 app.post('/api/friends/remove', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'Las funciones de amistad no están configuradas.' });
+    }
     const { friend_id } = req.body;
     const userId = req.user.id;
 
+    if (!isUuid(friend_id)) {
+        return res.status(400).json({ message: 'Identificador de amistad no válido.' });
+    }
+
     try {
-        await supabase
+        const { error } = await supabaseAdmin
             .from('friendships')
             .delete()
             .or(`and(user_id_1.eq.${userId},user_id_2.eq.${friend_id}),and(user_id_1.eq.${friend_id},user_id_2.eq.${userId})`);
+        if (error) throw error;
 
         res.json({ message: 'Amigo eliminado correctamente.' });
     } catch (err) {
@@ -892,144 +956,234 @@ app.post('/api/friends/remove', loginRequired, async (req, res) => {
 // --- RUTAS DE GCHAT (MENSAJERÍA PRIVADA) ---
 // ==========================================
 
+async function isAcceptedFriendship(userId, friendId) {
+    const { data, error } = await supabaseAdmin
+        .from('friendships')
+        .select('id')
+        .eq('status', 'accepted')
+        .or(`and(user_id_1.eq.${userId},user_id_2.eq.${friendId}),and(user_id_1.eq.${friendId},user_id_2.eq.${userId})`)
+        .limit(1);
+    if (error) throw error;
+    return Boolean(data && data.length);
+}
+
 // Obtener historial de mensajes con un amigo
 app.get('/api/gchat/history/:friendId', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'GChat privado no está configurado.' });
+    }
     const userId = req.user.id;
     const friendId = req.params.friendId;
-    const roomKey = [userId, friendId].sort().join('-');
+    if (!isUuid(friendId)) {
+        return res.status(400).json({ message: 'Identificador de amistad no válido.' });
+    }
 
     try {
-        // Consultar historial en Supabase o memoria
-        const { data: messages, error } = await supabase
+        if (!await isAcceptedFriendship(userId, friendId)) {
+            return res.status(403).json({ message: 'Solo puedes abrir chats con amigos aceptados.' });
+        }
+        const { data: messages, error } = await supabaseAdmin
             .from('messages')
-            .select('*')
+            .select('id, sender_id, receiver_id, sender_username, message, created_at')
             .or(`and(sender_id.eq.${userId},receiver_id.eq.${friendId}),and(sender_id.eq.${friendId},receiver_id.eq.${userId})`)
             .order('created_at', { ascending: true })
             .limit(50);
 
-        if (!error && messages) {
-            return res.json(messages);
-        }
-
-        // Fallback en memoria
-        return res.json(mockData.chatHistory[roomKey] || []);
+        if (error) throw error;
+        return res.json(messages || []);
     } catch (err) {
-        return res.json(mockData.chatHistory[roomKey] || []);
+        console.error('Error al cargar historial de GChat:', err);
+        return res.status(500).json({ message: 'No se pudo cargar el historial del chat.' });
     }
 });
 
 // Enviar mensaje a un amigo
 app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'GChat privado no está configurado.' });
+    }
     const senderId = req.user.id;
     const receiverId = req.params.recipientId;
     const { message } = req.body;
 
-    if (!message || message.trim() === '') {
+    if (!isUuid(receiverId)) {
+        return res.status(400).json({ message: 'Identificador de amistad no válido.' });
+    }
+    if (typeof message !== 'string' || !message.trim()) {
         return res.status(400).json({ message: 'El mensaje no puede estar vacío.' });
     }
-
-    const newMessage = {
-        id: Date.now(),
-        sender_id: senderId,
-        receiver_id: receiverId,
-        sender_username: req.user.username,
-        message: message.trim(),
-        created_at: new Date().toISOString()
-    };
-
-    // Guardar en Supabase si la tabla existe
+    const cleanMessage = message.trim();
+    if (cleanMessage.length > 1000) {
+        return res.status(400).json({ message: 'El mensaje no puede superar los 1000 caracteres.' });
+    }
     try {
-        await supabase.from('messages').insert([newMessage]);
+        if (!await isAcceptedFriendship(senderId, receiverId)) {
+            return res.status(403).json({ message: 'Solo puedes enviar mensajes a amigos aceptados.' });
+        }
+        const { data, error } = await supabaseAdmin
+            .from('messages')
+            .insert([{
+                sender_id: senderId,
+                receiver_id: receiverId,
+                sender_username: req.user.username,
+                message: cleanMessage
+            }])
+            .select('id, sender_id, receiver_id, sender_username, message, created_at')
+            .single();
+        if (error) throw error;
+
+        const roomKey = [senderId, receiverId].sort().join('-');
+        if (pusher) {
+            pusher.trigger(`chat-${roomKey}`, 'new-message', data)
+                .catch(e => console.warn('Pusher chat send failed:', e.message));
+            pusher.trigger(`user-${receiverId}`, 'chat-notification', {
+                from: req.user.username,
+                senderId,
+                message: data.message
+            }).catch(e => console.warn('Pusher notify failed:', e.message));
+        }
+        return res.status(201).json(data);
     } catch (err) {
-        console.warn('Could not persist message to Supabase, keeping in memory:', err.message);
+        console.error('Error al enviar mensaje de GChat:', err);
+        return res.status(500).json({ message: 'No se pudo guardar el mensaje.' });
     }
-
-    // Guardar en memoria de respaldo
-    const roomKey = [senderId, receiverId].sort().join('-');
-    if (!mockData.chatHistory[roomKey]) mockData.chatHistory[roomKey] = [];
-    mockData.chatHistory[roomKey].push(newMessage);
-
-    // Emitir con Pusher
-    if (pusher) {
-        const channelName = `chat-${roomKey}`;
-        pusher.trigger(channelName, 'new-message', newMessage)
-            .catch(e => console.warn('Pusher chat send failed:', e.message));
-
-        // Notificar también al canal personal del destinatario
-        pusher.trigger(`user-${receiverId}`, 'chat-notification', {
-            from: req.user.username,
-            senderId,
-            message: newMessage.message
-        }).catch(e => console.warn('Pusher notify failed:', e.message));
-    }
-
-    res.status(201).json(newMessage);
 });
 
 // ==========================================
 // --- RUTAS DE TIENDA Y RECOMPENSAS ---
 // ==========================================
 
-// Reclamar regalo diario (50 GCoins)
-app.post('/api/shop/claim_daily_reward', loginRequired, async (req, res) => {
+app.post('/api/gameplay/heartbeat', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La sincronización de juego no está configurada.' });
+    }
+
+    const userId = req.user.id;
+    const now = Date.now();
+    const previous = gameplayHeartbeats.get(userId);
+    if (!previous) {
+        gameplayHeartbeats.set(userId, now);
+        return res.json({ success: true, added_seconds: 0 });
+    }
+
+    const elapsedSeconds = Math.floor((now - previous) / 1000);
+    if (elapsedSeconds < 8) {
+        return res.json({ success: true, added_seconds: 0 });
+    }
+
+    const addedSeconds = Math.min(elapsedSeconds, 30);
     try {
-        const { data: user, error } = await supabase
-            .from('users')
-            .select('gcoins')
-            .eq('id', req.user.id)
-            .single();
+        const { data, error } = await supabaseAdmin.rpc('record_gameplay_time', {
+            p_user_id: userId,
+            p_seconds: addedSeconds
+        });
+        if (error) throw error;
 
-        if (error || !user) {
-            return res.status(404).json({ message: 'Usuario no encontrado.' });
-        }
-
-        const newBalance = (user.gcoins || 0) + 50;
-        await supabase
-            .from('users')
-            .update({ gcoins: newBalance })
-            .eq('id', req.user.id);
-
-        res.json({
-            message: '¡Has reclamado 50 GCoins con éxito!',
-            prize: 50,
-            new_balance: newBalance
+        gameplayHeartbeats.set(userId, now);
+        const result = Array.isArray(data) ? data[0] : data;
+        return res.json({
+            success: true,
+            added_seconds: addedSeconds,
+            gcoins_earned: result?.gcoins_earned || 0,
+            gcoins: result?.gcoins,
+            play_time_seconds: result?.play_time_seconds
         });
     } catch (err) {
+        console.error('Error al sincronizar tiempo de juego:', err);
+        return res.status(500).json({ message: 'No se pudo guardar el progreso de juego.' });
+    }
+});
+
+// Reclamar regalo diario (50 GCoins)
+app.post('/api/shop/claim_daily_reward', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'Las recompensas seguras no están configuradas.' });
+    }
+    try {
+        const { data, error } = await supabaseAdmin.rpc('claim_daily_gcoins', {
+            p_user_id: req.user.id
+        });
+        if (error) throw error;
+
+        const result = Array.isArray(data) ? data[0] : data;
+        return res.json({ message: '¡Has reclamado 50 GCoins con éxito!', ...result });
+    } catch (err) {
+        if (err.message && err.message.includes('DAILY_REWARD_COOLDOWN')) {
+            return res.status(429).json({ message: 'Ya reclamaste tu recompensa diaria. Vuelve en 24 horas.' });
+        }
         console.error('Error al reclamar recompensa diaria:', err);
-        res.status(500).json({ message: 'Error al procesar la recompensa diaria.' });
+        return res.status(500).json({ message: 'Error al procesar la recompensa diaria.' });
     }
 });
 
 // Registrar premio de la ruleta
 app.post('/api/shop/spin_roulette', loginRequired, async (req, res) => {
-    const { prize_amount } = req.body;
-    const prize = parseInt(prize_amount) || 0;
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'Las recompensas seguras no están configuradas.' });
+    }
 
     try {
-        const { data: user, error } = await supabase
-            .from('users')
-            .select('gcoins')
-            .eq('id', req.user.id)
-            .single();
-
-        if (error || !user) {
-            return res.status(404).json({ message: 'Usuario no encontrado.' });
-        }
-
-        const newBalance = Math.max(0, (user.gcoins || 0) + prize);
-        await supabase
-            .from('users')
-            .update({ gcoins: newBalance })
-            .eq('id', req.user.id);
-
-        res.json({
-            message: `¡Has ganado ${prize} GCoins!`,
-            prize,
-            new_balance: newBalance
+        const roll = Math.random();
+        const prize = roll < 0.55 ? 0 : roll < 0.82 ? 50 : roll < 0.97 ? 100 : 250;
+        const { data, error } = await supabaseAdmin.rpc('spin_gcoins_roulette', {
+            p_user_id: req.user.id,
+            p_prize: prize
         });
+        if (error) throw error;
+
+        const result = Array.isArray(data) ? data[0] : data;
+        return res.json({ message: `La ruleta otorgó ${prize} GCoins.`, prize, ...result });
     } catch (err) {
+        if (err.message && err.message.includes('INSUFFICIENT_GCOINS')) {
+            return res.status(400).json({ message: 'Necesitas 100 GCoins para girar la ruleta.' });
+        }
         console.error('Error en giro de ruleta:', err);
-        res.status(500).json({ message: 'Error al procesar el premio de la ruleta.' });
+        return res.status(500).json({ message: 'Error al procesar el premio de la ruleta.' });
+    }
+});
+
+app.post('/api/shop/purchase', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'Las compras seguras no están configuradas.' });
+    }
+
+    const prices = {
+        bubble_fire: 150,
+        bubble_ice: 150,
+        bubble_neon: 300,
+        bubble_dark: 500,
+        bubble_pixel: 250,
+        bubble_rgb: 450,
+        bubble_glass: 350,
+        bubble_cloud: 200,
+        tag_pro: 200,
+        tag_vip: 400,
+        tag_glitch: 600,
+        badge_miner: 100,
+        badge_ender: 250,
+        badge_music: 150
+    };
+    const itemId = typeof req.body.item_id === 'string' ? req.body.item_id : '';
+    const amount = prices[itemId];
+    if (!amount) {
+        return res.status(400).json({ message: 'Artículo no válido.' });
+    }
+
+    try {
+        const { data, error } = await supabaseAdmin.rpc('spend_user_gcoins', {
+            p_user_id: req.user.id,
+            p_amount: amount
+        });
+        if (error) throw error;
+
+        const result = Array.isArray(data) ? data[0] : data;
+        return res.json({ success: true, item_id: itemId, ...result });
+    } catch (err) {
+        if (err.message && err.message.includes('INSUFFICIENT_GCOINS')) {
+            return res.status(400).json({ message: 'No tienes suficientes GCoins.' });
+        }
+        console.error('Error al comprar artículo:', err);
+        return res.status(500).json({ message: 'No se pudo completar la compra.' });
     }
 });
 
