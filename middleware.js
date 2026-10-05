@@ -992,7 +992,7 @@ app.get('/api/gchat/history/:friendId', loginRequired, async (req, res) => {
         }
         const { data: messages, error } = await supabaseAdmin
             .from('messages')
-            .select('id, sender_id, receiver_id, sender_username, message, created_at')
+            .select('id, sender_id, receiver_id, sender_username, message, created_at, reply_to_message_id, reply_to_username, reply_to_message')
             .or(`and(sender_id.eq.${userId},receiver_id.eq.${friendId}),and(sender_id.eq.${friendId},receiver_id.eq.${userId})`)
             .order('created_at', { ascending: true })
             .limit(50);
@@ -1013,6 +1013,7 @@ app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
     const senderId = req.user.id;
     const receiverId = req.params.recipientId;
     const message = req.body?.message ?? req.body?.content;
+    const replyToMessageId = req.body?.replyToMessageId ?? null;
 
     if (!isUuid(receiverId)) {
         return res.status(400).json({ message: 'Identificador de amistad no válido.' });
@@ -1024,9 +1025,30 @@ app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
     if (cleanMessage.length > 1000) {
         return res.status(400).json({ message: 'El mensaje no puede superar los 1000 caracteres.' });
     }
+    if (replyToMessageId !== null && !isUuid(replyToMessageId)) {
+        return res.status(400).json({ message: 'El mensaje citado no es válido.' });
+    }
     try {
         if (!await isAcceptedFriendship(senderId, receiverId)) {
             return res.status(403).json({ message: 'Solo puedes enviar mensajes a amigos aceptados.' });
+        }
+        let replySnapshot = null;
+        if (replyToMessageId) {
+            const { data: repliedMessage, error: replyError } = await supabaseAdmin
+                .from('messages')
+                .select('id, sender_id, receiver_id, sender_username, message')
+                .eq('id', replyToMessageId)
+                .or(`and(sender_id.eq.${senderId},receiver_id.eq.${receiverId}),and(sender_id.eq.${receiverId},receiver_id.eq.${senderId})`)
+                .maybeSingle();
+            if (replyError) throw replyError;
+            if (!repliedMessage) {
+                return res.status(400).json({ message: 'No puedes responder a un mensaje de otra conversación.' });
+            }
+            replySnapshot = {
+                reply_to_message_id: repliedMessage.id,
+                reply_to_username: repliedMessage.sender_username,
+                reply_to_message: repliedMessage.message
+            };
         }
         const { data, error } = await supabaseAdmin
             .from('messages')
@@ -1034,9 +1056,10 @@ app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
                 sender_id: senderId,
                 receiver_id: receiverId,
                 sender_username: req.user.username,
-                message: cleanMessage
+                message: cleanMessage,
+                ...replySnapshot
             }])
-            .select('id, sender_id, receiver_id, sender_username, message, created_at')
+            .select('id, sender_id, receiver_id, sender_username, message, created_at, reply_to_message_id, reply_to_username, reply_to_message')
             .single();
         if (error) throw error;
 
