@@ -441,7 +441,7 @@ app.get('/api/user_info', loginRequired, async (req, res) => {
     try {
         const { data: user, error } = await supabase
             .from('users')
-            .select('id, username, nickname, gcoins, play_time_seconds, created_at, account_type, profile_picture_url, avatar_url, role, is_admin, register_complete, status, show_online, allow_requests')
+            .select('id, username, nickname, gcoins, play_time_seconds, created_at, account_type, profile_picture_url, role, is_admin, register_complete, status, show_online, allow_requests')
             .eq('id', req.user.id)
             .single();
 
@@ -450,7 +450,7 @@ app.get('/api/user_info', loginRequired, async (req, res) => {
         }
 
         // Formato unificado de avatar
-        user.avatar_url = user.avatar_url || user.profile_picture_url || `https://crafatar.com/avatars/${user.username}?size=100&overlay`;
+        user.avatar_url = user.profile_picture_url || `https://crafatar.com/avatars/${user.username}?size=100&overlay`;
         user.status = user.status || 'Disponible';
         user.owned_cosmetics = user.owned_cosmetics || [];
 
@@ -463,29 +463,32 @@ app.get('/api/user_info', loginRequired, async (req, res) => {
 
 // Buscar usuarios en la base de datos (Real-time search)
 app.get('/api/users/search', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La búsqueda social no está configurada.' });
+    }
     const query = req.query.q || req.query.query || '';
     if (!query || query.trim().length === 0) {
         return res.json([]);
     }
 
     try {
-        const { data: users, error } = await supabase
+        const { data: users, error } = await supabaseAdmin
             .from('users')
-            .select('id, username, nickname, profile_picture_url, avatar_url, role, status')
+            .select('id, username, nickname, profile_picture_url, role, status')
             .ilike('username', `%${query.trim()}%`)
             .neq('id', req.user.id)
             .limit(20);
 
         if (error) {
             console.error('Error en búsqueda de usuarios:', error);
-            return res.json([]);
+            return res.status(500).json({ message: 'No se pudo buscar usuarios.' });
         }
 
         const formattedUsers = (users || []).map(u => ({
             id: u.id,
             username: u.username,
             nickname: u.nickname || u.username,
-            avatar_url: u.avatar_url || u.profile_picture_url || `https://crafatar.com/avatars/${u.username}?size=100&overlay`,
+            avatar_url: u.profile_picture_url || `https://crafatar.com/avatars/${u.username}?size=100&overlay`,
             role: u.role || 'Jugador',
             status: u.status || 'Disponible'
         }));
@@ -548,7 +551,6 @@ app.post('/api/user/update_profile', loginRequired, upload.single('avatar_file')
     }
 
     if (avatar_url) {
-        updateData.avatar_url = avatar_url;
         updateData.profile_picture_url = avatar_url;
     }
 
@@ -556,7 +558,6 @@ app.post('/api/user/update_profile', loginRequired, upload.single('avatar_file')
     if (req.file) {
         // En una implementación con Supabase Storage se subiría aquí; guardamos data URI o ruta
         const base64Image = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
-        updateData.avatar_url = base64Image;
         updateData.profile_picture_url = base64Image;
     }
 
@@ -574,6 +575,7 @@ app.post('/api/user/update_profile', loginRequired, upload.single('avatar_file')
             }
             throw error;
         }
+        updatedUser.avatar_url = updatedUser.profile_picture_url || `https://crafatar.com/avatars/${updatedUser.username}?size=100&overlay`;
 
         // Si cambió el username, generar nuevo JWT
         let newToken = null;
@@ -721,8 +723,6 @@ app.get('/api/friends', loginRequired, async (req, res) => {
     try {
         // Intento 1: Traer con relaciones si PostgREST detectó las FKs
         let friendships = null;
-        let queryError = null;
-
         const resWithRel = await supabaseAdmin
             .from('friendships')
             .select(`
@@ -730,8 +730,8 @@ app.get('/api/friends', loginRequired, async (req, res) => {
                 status,
                 user_id_1,
                 user_id_2,
-                user1:users!user_id_1(id, username, nickname, avatar_url, profile_picture_url, status, role),
-                user2:users!user_id_2(id, username, nickname, avatar_url, profile_picture_url, status, role)
+                user1:users!user_id_1(id, username, nickname, profile_picture_url, status, role),
+                user2:users!user_id_2(id, username, nickname, profile_picture_url, status, role)
             `)
             .or(`user_id_1.eq.${userId},user_id_2.eq.${userId}`);
 
@@ -758,7 +758,7 @@ app.get('/api/friends', loginRequired, async (req, res) => {
             const otherIds = [...new Set(rawFriendships.map(f => String(f.user_id_1) === String(userId) ? f.user_id_2 : f.user_id_1))];
             const { data: usersData, error: usersError } = await supabaseAdmin
                 .from('users')
-                .select('id, username, nickname, avatar_url, profile_picture_url, status, role')
+                .select('id, username, nickname, profile_picture_url, status, role')
                 .in('id', otherIds);
             if (usersError) throw usersError;
 
