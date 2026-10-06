@@ -65,6 +65,25 @@ const launcherAchievementIds = new Set([
     'modloader_expert',
     'safety_first'
 ]);
+const cosmeticCssProperties = new Set([
+    'background', 'background-color', 'background-image', 'backdrop-filter',
+    'border', 'border-color', 'border-radius', 'border-style', 'border-width',
+    'box-shadow', 'color', 'font-family', 'font-size', 'font-style',
+    'font-weight', 'letter-spacing', 'line-height', 'text-shadow'
+]);
+
+function isCosmeticCssValid(cssCode) {
+    if (typeof cssCode !== 'string' || cssCode.length > 12000 ||
+        /url\s*\(|expression\s*\(|@import|javascript:|<\/style|behavior\s*:|-moz-binding|image-set\s*\(|image\s*\(|element\s*\(|paint\s*\(|cross-fade\s*\(|\/\*|\*\/|[\\<>{}\0]/i.test(cssCode)) {
+        return false;
+    }
+    return cssCode.split(';').every(declaration => {
+        const trimmed = declaration.trim();
+        if (!trimmed) return true;
+        const match = trimmed.match(/^([a-z-]+)\s*:\s*.+$/i);
+        return Boolean(match && cosmeticCssProperties.has(match[1].toLowerCase()));
+    });
+}
 
 // In-memory fallback caches
 const mockData = {
@@ -469,10 +488,24 @@ app.get('/api/user_info', loginRequired, async (req, res) => {
             return res.status(404).json({ message: 'Usuario no encontrado.' });
         }
 
+        if (!supabaseAdmin) {
+            return res.status(503).json({ message: 'El inventario de cosméticos no está configurado.' });
+        }
+        const { data: cosmetics, error: cosmeticsError } = await supabaseAdmin
+            .from('user_cosmetics')
+            .select('item_id, item_type, equipped')
+            .eq('user_id', req.user.id);
+        if (cosmeticsError) throw cosmeticsError;
+
         // Formato unificado de avatar
         user.avatar_url = user.profile_picture_url || `https://crafatar.com/avatars/${user.username}?size=100&overlay`;
         user.status = user.status || 'Disponible';
-        user.owned_cosmetics = user.owned_cosmetics || [];
+        user.owned_cosmetics = (cosmetics || []).map(cosmetic => cosmetic.item_id);
+        user.equipped_cosmetics = Object.fromEntries(
+            (cosmetics || [])
+                .filter(cosmetic => cosmetic.equipped)
+                .map(cosmetic => [cosmetic.item_type, cosmetic.item_id])
+        );
 
         res.json(user);
     } catch (err) {
@@ -523,6 +556,319 @@ app.post('/api/achievements/sync', loginRequired, async (req, res) => {
     } catch (err) {
         console.error('Error al sincronizar logros del usuario:', err);
         return res.status(500).json({ message: 'No se pudieron sincronizar los logros. Verifica la migración user_achievements.' });
+    }
+});
+
+app.get('/api/progression/me', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La sincronización de niveles no está configurada.' });
+    }
+
+    try {
+        const { error: ensureError } = await supabaseAdmin
+            .from('user_progression')
+            .upsert({ user_id: req.user.id, xp: 0 }, { onConflict: 'user_id', ignoreDuplicates: true });
+        if (ensureError) throw ensureError;
+
+        const [
+            { data: progression, error: progressionError },
+            { data: claims, error: claimsError },
+            { data: cosmetics, error: cosmeticsError }
+        ] = await Promise.all([
+            supabaseAdmin.from('user_progression').select('xp').eq('user_id', req.user.id).single(),
+            supabaseAdmin.from('user_level_reward_claims').select('level').eq('user_id', req.user.id),
+            supabaseAdmin.from('user_cosmetics').select('item_id').eq('user_id', req.user.id)
+        ]);
+        if (progressionError) throw progressionError;
+        if (claimsError) throw claimsError;
+        if (cosmeticsError) throw cosmeticsError;
+
+        const xp = Number(progression.xp) || 0;
+        const level = Math.floor(xp / 100) + 1;
+        const claimedRewards = (claims || []).map(claim => claim.level).sort((a, b) => a - b);
+        const claimedSet = new Set(claimedRewards);
+        const pendingRewards = [];
+        for (let rewardLevel = 5; rewardLevel <= level; rewardLevel += 5) {
+            if (!claimedSet.has(rewardLevel)) pendingRewards.push(rewardLevel);
+        }
+        const rank = level >= 50 ? 'LEYENDA'
+            : level >= 30 ? 'ÉLITE'
+                : level >= 20 ? 'VETERANO'
+                    : level >= 10 ? 'AVENTURERO'
+                        : level >= 5 ? 'EXPLORADOR' : 'JUGADOR GLOBAL';
+
+        return res.json({
+            xp,
+            level,
+            rank,
+            xp_in_level: xp % 100,
+            xp_to_next_level: 100 - (xp % 100),
+            pending_rewards: pendingRewards,
+            claimed_rewards: claimedRewards,
+            owned_cosmetics: (cosmetics || []).map(cosmetic => cosmetic.item_id)
+        });
+    } catch (err) {
+        console.error('Error al cargar la progresión del usuario:', err);
+        return res.status(500).json({ message: 'No se pudo cargar la progresión. Verifica la migración player_progression.' });
+    }
+});
+
+app.post('/api/progression/rewards/claim', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'Las recompensas de nivel no están configuradas.' });
+    }
+
+    const level = Number(req.body?.level);
+    const itemId = typeof req.body?.item_id === 'string' ? req.body.item_id : '';
+    if (!Number.isSafeInteger(level) || level < 5 || level % 5 !== 0 || !itemId) {
+        return res.status(400).json({ message: 'El nivel o el cosmético de la recompensa no son válidos.' });
+    }
+
+    try {
+        const { data, error } = await supabaseAdmin.rpc('claim_level_cosmetic', {
+            p_user_id: req.user.id,
+            p_level: level,
+            p_item_id: itemId
+        });
+        if (error) throw error;
+        const result = Array.isArray(data) ? data[0] : data;
+        return res.json({ success: true, ...result });
+    } catch (err) {
+        const message = String(err.message || '');
+        if (message.includes('LEVEL_REWARD_NOT_EARNED')) {
+            return res.status(400).json({ message: 'Aún no has alcanzado ese nivel.' });
+        }
+        if (message.includes('COSMETIC_ALREADY_OWNED')) {
+            return res.status(409).json({ message: 'Ya tienes ese cosmético. Elige otro.' });
+        }
+        if (message.includes('INVALID_REWARD_LEVEL') || message.includes('INVALID_COSMETIC')) {
+            return res.status(400).json({ message: 'El nivel o el cosmético de la recompensa no son válidos.' });
+        }
+        if (message.includes('user_level_reward_claims_pkey')) {
+            return res.status(409).json({ message: 'Esta recompensa de nivel ya fue reclamada.' });
+        }
+        console.error('Error al reclamar recompensa de nivel:', err);
+        return res.status(500).json({ message: 'No se pudo reclamar la recompensa de nivel.' });
+    }
+});
+
+app.get('/api/shop/cosmetics', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'El catálogo de cosméticos no está configurado.' });
+    }
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('cosmetic_catalog')
+            .select('item_id, name, type, price, icon, description, css_code')
+            .eq('enabled', true)
+            .order('type', { ascending: true })
+            .order('price', { ascending: true });
+        if (error) throw error;
+        return res.json(data || []);
+    } catch (err) {
+        console.error('Error al cargar el catálogo de cosméticos:', err);
+        return res.status(500).json({ message: 'No se pudo cargar el catálogo de cosméticos.' });
+    }
+});
+
+app.get('/api/cosmetics/me', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'El inventario de cosméticos no está configurado.' });
+    }
+    try {
+        const { data: owned, error: ownedError } = await supabaseAdmin
+            .from('user_cosmetics')
+            .select('item_id, item_type, source, equipped, acquired_at')
+            .eq('user_id', req.user.id)
+            .order('acquired_at', { ascending: true });
+        if (ownedError) throw ownedError;
+
+        const ids = (owned || []).map(item => item.item_id);
+        const { data: catalog, error: catalogError } = ids.length
+            ? await supabaseAdmin
+                .from('cosmetic_catalog')
+                .select('item_id, name, type, price, icon, description, css_code, enabled')
+                .in('item_id', ids)
+            : { data: [], error: null };
+        if (catalogError) throw catalogError;
+
+        const catalogById = new Map((catalog || []).map(item => [item.item_id, item]));
+        return res.json({
+            items: (owned || []).map(item => ({
+                ...catalogById.get(item.item_id),
+                item_id: item.item_id,
+                type: item.item_type,
+                source: item.source,
+                equipped: item.equipped,
+                acquired_at: item.acquired_at
+            })),
+            equipped: Object.fromEntries(
+                (owned || [])
+                    .filter(item => item.equipped)
+                    .map(item => [item.item_type, item.item_id])
+            )
+        });
+    } catch (err) {
+        console.error('Error al cargar el inventario de cosméticos:', err);
+        return res.status(500).json({ message: 'No se pudo cargar el inventario de cosméticos.' });
+    }
+});
+
+app.post('/api/cosmetics/equip', loginRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'El equipamiento de cosméticos no está configurado.' });
+    }
+    const type = req.body?.type;
+    const itemId = req.body?.item_id === null ? null : req.body?.item_id;
+    if (!['bubble', 'nametag', 'badge'].includes(type) ||
+        (itemId !== null && (typeof itemId !== 'string' || !itemId))) {
+        return res.status(400).json({ message: 'El tipo o el artículo seleccionado no son válidos.' });
+    }
+
+    try {
+        const { data, error } = await supabaseAdmin.rpc('set_user_equipped_cosmetic', {
+            p_user_id: req.user.id,
+            p_type: type,
+            p_item_id: itemId
+        });
+        if (error) throw error;
+        const result = Array.isArray(data) ? data[0] : data;
+        return res.json({ success: true, ...result });
+    } catch (err) {
+        const message = String(err.message || '');
+        if (message.includes('COSMETIC_NOT_OWNED')) {
+            return res.status(403).json({ message: 'Solo puedes equipar cosméticos que ya tienes.' });
+        }
+        if (message.includes('INVALID_COSMETIC_TYPE')) {
+            return res.status(400).json({ message: 'El tipo del cosmético no es válido.' });
+        }
+        console.error('Error al equipar cosmético:', err);
+        return res.status(500).json({ message: 'No se pudo actualizar el cosmético equipado.' });
+    }
+});
+
+app.get('/api/admin/cosmetics', loginRequired, adminRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La administración del catálogo no está configurada.' });
+    }
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('cosmetic_catalog')
+            .select('item_id, name, type, price, icon, description, css_code, enabled, updated_at')
+            .order('updated_at', { ascending: false });
+        if (error) throw error;
+        return res.json(data || []);
+    } catch (err) {
+        console.error('Error al cargar el catálogo de administración:', err);
+        return res.status(500).json({ message: 'No se pudo cargar el catálogo de administración.' });
+    }
+});
+
+app.post('/api/admin/cosmetics', loginRequired, adminRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La administración del catálogo no está configurada.' });
+    }
+    const itemId = typeof req.body?.item_id === 'string' ? req.body.item_id : '';
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const type = req.body?.type;
+    const icon = typeof req.body?.icon === 'string' ? req.body.icon : '';
+    const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+    const cssCode = typeof req.body?.css_code === 'string' ? req.body.css_code : '';
+    const price = Number(req.body?.price);
+    if (!/^[a-z0-9][a-z0-9_-]{1,63}$/.test(itemId) ||
+        !name || name.length > 100 ||
+        !['bubble', 'nametag', 'badge'].includes(type) ||
+        !Number.isSafeInteger(price) || price < 0 || price > 100000 ||
+        !icon || icon.length > 32 ||
+        description.length > 500 ||
+        !isCosmeticCssValid(cssCode)) {
+        return res.status(400).json({ message: 'Los datos del cosmético no son válidos.' });
+    }
+
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('cosmetic_catalog')
+            .insert({
+                item_id: itemId,
+                name,
+                type,
+                price,
+                icon,
+                description,
+                css_code: cssCode,
+                enabled: true
+            })
+            .select('item_id, name, type, price, icon, description, css_code, enabled')
+            .single();
+        if (error) {
+            if (error.code === '23505') return res.status(409).json({ message: 'Ya existe un cosmético con ese identificador.' });
+            throw error;
+        }
+        return res.status(201).json(data);
+    } catch (err) {
+        console.error('Error al crear cosmético del catálogo:', err);
+        return res.status(500).json({ message: 'No se pudo crear el cosmético.' });
+    }
+});
+
+app.put('/api/admin/cosmetics/:itemId', loginRequired, adminRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La administración del catálogo no está configurada.' });
+    }
+    const itemId = req.params.itemId;
+    const updates = {};
+    if (typeof req.body?.name === 'string') updates.name = req.body.name.trim();
+    if (req.body?.type !== undefined) updates.type = req.body.type;
+    if (req.body?.price !== undefined) updates.price = Number(req.body.price);
+    if (typeof req.body?.icon === 'string') updates.icon = req.body.icon;
+    if (typeof req.body?.description === 'string') updates.description = req.body.description.trim();
+    if (typeof req.body?.css_code === 'string') updates.css_code = req.body.css_code;
+    if (typeof req.body?.enabled === 'boolean') updates.enabled = req.body.enabled;
+
+    if (!/^[a-z0-9][a-z0-9_-]{1,63}$/.test(itemId) ||
+        !Object.keys(updates).length ||
+        (updates.name !== undefined && (!updates.name || updates.name.length > 100)) ||
+        (updates.type !== undefined && !['bubble', 'nametag', 'badge'].includes(updates.type)) ||
+        (updates.price !== undefined && (!Number.isSafeInteger(updates.price) || updates.price < 0 || updates.price > 100000)) ||
+        (updates.icon !== undefined && (!updates.icon || updates.icon.length > 32)) ||
+        (updates.description !== undefined && updates.description.length > 500) ||
+        (updates.css_code !== undefined && !isCosmeticCssValid(updates.css_code))) {
+        return res.status(400).json({ message: 'Los datos del cosmético no son válidos.' });
+    }
+
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('cosmetic_catalog')
+            .update({ ...updates, updated_at: new Date().toISOString() })
+            .eq('item_id', itemId)
+            .select('item_id, name, type, price, icon, description, css_code, enabled')
+            .maybeSingle();
+        if (error) throw error;
+        if (!data) return res.status(404).json({ message: 'Cosmético no encontrado.' });
+        return res.json(data);
+    } catch (err) {
+        console.error('Error al actualizar cosmético del catálogo:', err);
+        return res.status(500).json({ message: 'No se pudo actualizar el cosmético.' });
+    }
+});
+
+app.delete('/api/admin/cosmetics/:itemId', loginRequired, adminRequired, async (req, res) => {
+    if (!supabaseAdmin) {
+        return res.status(503).json({ message: 'La administración del catálogo no está configurada.' });
+    }
+    try {
+        const { data, error } = await supabaseAdmin
+            .from('cosmetic_catalog')
+            .update({ enabled: false, updated_at: new Date().toISOString() })
+            .eq('item_id', req.params.itemId)
+            .select('item_id')
+            .maybeSingle();
+        if (error) throw error;
+        if (!data) return res.status(404).json({ message: 'Cosmético no encontrado.' });
+        return res.json({ success: true, item_id: data.item_id, enabled: false });
+    } catch (err) {
+        console.error('Error al desactivar cosmético del catálogo:', err);
+        return res.status(500).json({ message: 'No se pudo desactivar el cosmético.' });
     }
 });
 
@@ -1237,7 +1583,9 @@ app.post('/api/gameplay/heartbeat', loginRequired, async (req, res) => {
             added_seconds: addedSeconds,
             gcoins_earned: result?.gcoins_earned || 0,
             gcoins: result?.gcoins,
-            play_time_seconds: result?.play_time_seconds
+            play_time_seconds: result?.play_time_seconds,
+            xp: result?.xp,
+            xp_earned: result?.xp_earned || 0
         });
     } catch (err) {
         console.error('Error al sincronizar tiempo de juego:', err);
@@ -1298,40 +1646,30 @@ app.post('/api/shop/purchase', loginRequired, async (req, res) => {
         return res.status(503).json({ message: 'Las compras seguras no están configuradas.' });
     }
 
-    const prices = {
-        bubble_fire: 150,
-        bubble_ice: 150,
-        bubble_neon: 300,
-        bubble_dark: 500,
-        bubble_pixel: 250,
-        bubble_rgb: 450,
-        bubble_glass: 350,
-        bubble_cloud: 200,
-        tag_pro: 200,
-        tag_vip: 400,
-        tag_glitch: 600,
-        badge_miner: 100,
-        badge_ender: 250,
-        badge_music: 150
-    };
     const itemId = typeof req.body.item_id === 'string' ? req.body.item_id : '';
-    const amount = prices[itemId];
-    if (!amount) {
+    if (!itemId) {
         return res.status(400).json({ message: 'Artículo no válido.' });
     }
 
     try {
-        const { data, error } = await supabaseAdmin.rpc('spend_user_gcoins', {
+        const { data, error } = await supabaseAdmin.rpc('purchase_shop_cosmetic', {
             p_user_id: req.user.id,
-            p_amount: amount
+            p_item_id: itemId
         });
         if (error) throw error;
 
         const result = Array.isArray(data) ? data[0] : data;
         return res.json({ success: true, item_id: itemId, ...result });
     } catch (err) {
-        if (err.message && err.message.includes('INSUFFICIENT_GCOINS')) {
+        const message = String(err.message || '');
+        if (message.includes('INSUFFICIENT_GCOINS')) {
             return res.status(400).json({ message: 'No tienes suficientes GCoins.' });
+        }
+        if (message.includes('COSMETIC_ALREADY_OWNED')) {
+            return res.status(409).json({ message: 'Ya tienes este artículo.' });
+        }
+        if (message.includes('INVALID_COSMETIC')) {
+            return res.status(400).json({ message: 'Artículo no válido.' });
         }
         console.error('Error al comprar artículo:', err);
         return res.status(500).json({ message: 'No se pudo completar la compra.' });
