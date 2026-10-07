@@ -26,6 +26,7 @@ order in the Supabase SQL Editor:
 2. `supabase/migrations/20261005_secure_gcoins_gameplay.sql`
 3. `supabase/migrations/20261006_player_progression.sql`
 4. `supabase/migrations/20261007_cosmetic_catalog_equipment.sql`
+5. `supabase/migrations/20261008_bubble_sticker_editor.sql`
 
 The progression migration converts existing playtime (1 XP per minute) and
 saved launcher achievements (25 XP each) once, then awards XP from server-side
@@ -73,3 +74,12 @@ the backend and clients accept only visual properties such as backgrounds,
 borders, colors, typography, and shadows; external URLs, imports, and arbitrary
 selectors are rejected or ignored. The catalog write routes run on the backend
 with its service-role key; never put that key in the future admin application.
+
+Bubble stickers are stored in the public-read-only `cosmetic-stickers` Storage
+bucket. Apply `20261008_bubble_sticker_editor.sql` before using the sticker
+editor. An admin uploads PNG, JPEG, or WebP images (up to 5 MB) through
+`POST /api/admin/cosmetics/:itemId/sticker`; the backend validates and
+normalizes each image to WebP before saving it. Sticker position, size, and
+rotation are persisted in `cosmetic_catalog.sticker_config` and included in
+catalog and inventory responses. The web dashboard and launcher use that
+shared configuration when drawing equipped bubbles and previews.

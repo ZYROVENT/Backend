@@ -3,6 +3,7 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
+const sharp = require('sharp');
 const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcryptjs');
 const Pusher = require('pusher');
@@ -45,6 +46,10 @@ const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
 });
+const cosmeticStickerUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024, files: 1 }
+});
 const launcherAchievementIds = new Set([
     'first_download',
     'first_launch',
@@ -77,12 +82,38 @@ function isCosmeticCssValid(cssCode) {
         /url\s*\(|expression\s*\(|@import|javascript:|<\/style|behavior\s*:|-moz-binding|image-set\s*\(|image\s*\(|element\s*\(|paint\s*\(|cross-fade\s*\(|\/\*|\*\/|[\\<>{}\0]/i.test(cssCode)) {
         return false;
     }
+
     return cssCode.split(';').every(declaration => {
         const trimmed = declaration.trim();
         if (!trimmed) return true;
         const match = trimmed.match(/^([a-z-]+)\s*:\s*.+$/i);
         return Boolean(match && cosmeticCssProperties.has(match[1].toLowerCase()));
     });
+}
+
+function isCosmeticStickerConfigValid(stickerConfig, itemId) {
+    if (!stickerConfig || typeof stickerConfig !== 'object' || Array.isArray(stickerConfig)) return false;
+    const keys = Object.keys(stickerConfig);
+    if (keys.length === 0) return true;
+    if (keys.some(key => !['image_url', 'x', 'y', 'size', 'rotation'].includes(key))) return false;
+
+    const imageUrl = stickerConfig.image_url;
+    if (typeof imageUrl !== 'string' || !itemId) return false;
+    try {
+        const url = new URL(imageUrl);
+        const storageBase = new URL(supabaseUrl);
+        if (url.origin !== storageBase.origin ||
+            url.pathname !== `/storage/v1/object/public/cosmetic-stickers/${itemId}.webp`) {
+            return false;
+        }
+    } catch {
+        return false;
+    }
+
+    return Number.isFinite(stickerConfig.x) && stickerConfig.x >= 0 && stickerConfig.x <= 100 &&
+        Number.isFinite(stickerConfig.y) && stickerConfig.y >= 0 && stickerConfig.y <= 100 &&
+        Number.isFinite(stickerConfig.size) && stickerConfig.size >= 8 && stickerConfig.size <= 60 &&
+        Number.isFinite(stickerConfig.rotation) && stickerConfig.rotation >= -180 && stickerConfig.rotation <= 180;
 }
 
 // In-memory fallback caches
@@ -659,7 +690,7 @@ app.get('/api/shop/cosmetics', loginRequired, async (req, res) => {
     try {
         const { data, error } = await supabaseAdmin
             .from('cosmetic_catalog')
-            .select('item_id, name, type, price, icon, description, css_code')
+            .select('item_id, name, type, price, icon, description, css_code, sticker_config')
             .eq('enabled', true)
             .order('type', { ascending: true })
             .order('price', { ascending: true });
@@ -687,7 +718,7 @@ app.get('/api/cosmetics/me', loginRequired, async (req, res) => {
         const { data: catalog, error: catalogError } = ids.length
             ? await supabaseAdmin
                 .from('cosmetic_catalog')
-                .select('item_id, name, type, price, icon, description, css_code, enabled')
+                .select('item_id, name, type, price, icon, description, css_code, sticker_config, enabled')
                 .in('item_id', ids)
             : { data: [], error: null };
         if (catalogError) throw catalogError;
@@ -754,7 +785,7 @@ app.get('/api/admin/cosmetics', loginRequired, adminRequired, async (req, res) =
     try {
         const { data, error } = await supabaseAdmin
             .from('cosmetic_catalog')
-            .select('item_id, name, type, price, icon, description, css_code, enabled, updated_at')
+            .select('item_id, name, type, price, icon, description, css_code, sticker_config, enabled, updated_at')
             .order('updated_at', { ascending: false });
         if (error) throw error;
         return res.json(data || []);
@@ -774,6 +805,7 @@ app.post('/api/admin/cosmetics', loginRequired, adminRequired, async (req, res) 
     const icon = typeof req.body?.icon === 'string' ? req.body.icon : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
     const cssCode = typeof req.body?.css_code === 'string' ? req.body.css_code : '';
+    const stickerConfig = req.body?.sticker_config === undefined ? {} : req.body.sticker_config;
     const price = Number(req.body?.price);
     if (!/^[a-z0-9][a-z0-9_-]{1,63}$/.test(itemId) ||
         !name || name.length > 100 ||
@@ -781,7 +813,8 @@ app.post('/api/admin/cosmetics', loginRequired, adminRequired, async (req, res) 
         !Number.isSafeInteger(price) || price < 0 || price > 100000 ||
         !icon || icon.length > 32 ||
         description.length > 500 ||
-        !isCosmeticCssValid(cssCode)) {
+        !isCosmeticCssValid(cssCode) ||
+        !isCosmeticStickerConfigValid(stickerConfig, itemId)) {
         return res.status(400).json({ message: 'Los datos del cosmético no son válidos.' });
     }
 
@@ -796,9 +829,10 @@ app.post('/api/admin/cosmetics', loginRequired, adminRequired, async (req, res) 
                 icon,
                 description,
                 css_code: cssCode,
+                sticker_config: stickerConfig,
                 enabled: true
             })
-            .select('item_id, name, type, price, icon, description, css_code, enabled')
+            .select('item_id, name, type, price, icon, description, css_code, sticker_config, enabled')
             .single();
         if (error) {
             if (error.code === '23505') return res.status(409).json({ message: 'Ya existe un cosmético con ese identificador.' });
@@ -810,6 +844,94 @@ app.post('/api/admin/cosmetics', loginRequired, adminRequired, async (req, res) 
         return res.status(500).json({ message: 'No se pudo crear el cosmético.' });
     }
 });
+
+app.post(
+    '/api/admin/cosmetics/:itemId/sticker',
+    loginRequired,
+    adminRequired,
+    (req, res, next) => cosmeticStickerUpload.single('sticker')(req, res, error => {
+        if (!error) return next();
+        if (error.code === 'LIMIT_FILE_SIZE') {
+            return res.status(413).json({ message: 'La imagen no puede superar los 5 MB.' });
+        }
+        return res.status(400).json({ message: 'No se pudo leer la imagen enviada.' });
+    }),
+    async (req, res) => {
+        if (!supabaseAdmin) {
+            return res.status(503).json({ message: 'El almacenamiento de stickers no está configurado.' });
+        }
+        const itemId = req.params.itemId;
+        if (!/^[a-z0-9][a-z0-9_-]{1,63}$/.test(itemId)) {
+            return res.status(400).json({ message: 'El identificador de la burbuja no es válido.' });
+        }
+        if (!req.file) {
+            return res.status(400).json({ message: 'Selecciona una imagen PNG, JPEG o WebP.' });
+        }
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(req.file.mimetype)) {
+            return res.status(415).json({ message: 'Solo se permiten imágenes PNG, JPEG o WebP.' });
+        }
+
+        try {
+            const { data: bubble, error: lookupError } = await supabaseAdmin
+                .from('cosmetic_catalog')
+                .select('item_id, type, sticker_config')
+                .eq('item_id', itemId)
+                .maybeSingle();
+            if (lookupError) throw lookupError;
+            if (!bubble || bubble.type !== 'bubble') {
+                return res.status(404).json({ message: 'No se encontró esa burbuja.' });
+            }
+
+            let webpBuffer;
+            try {
+                const image = sharp(req.file.buffer, { limitInputPixels: 16777216 });
+                const metadata = await image.metadata();
+                if (!['png', 'jpeg', 'webp'].includes(metadata.format)) {
+                    return res.status(415).json({ message: 'El contenido del archivo no es una imagen PNG, JPEG o WebP válida.' });
+                }
+                webpBuffer = await image
+                    .rotate()
+                    .resize(512, 512, { fit: 'inside', withoutEnlargement: true })
+                    .webp({ quality: 86 })
+                    .toBuffer();
+            } catch {
+                return res.status(415).json({ message: 'El archivo está dañado o no se puede procesar como imagen.' });
+            }
+
+            const objectPath = `${itemId}.webp`;
+            const { error: uploadError } = await supabaseAdmin.storage
+                .from('cosmetic-stickers')
+                .upload(objectPath, webpBuffer, {
+                    contentType: 'image/webp',
+                    cacheControl: '0',
+                    upsert: true
+                });
+            if (uploadError) throw uploadError;
+
+            const { data: publicUrlData } = supabaseAdmin.storage
+                .from('cosmetic-stickers')
+                .getPublicUrl(objectPath);
+            const stickerConfig = {
+                image_url: `${publicUrlData.publicUrl}?v=${Date.now()}`,
+                x: Number.isFinite(bubble.sticker_config?.x) ? bubble.sticker_config.x : 78,
+                y: Number.isFinite(bubble.sticker_config?.y) ? bubble.sticker_config.y : 24,
+                size: Number.isFinite(bubble.sticker_config?.size) ? bubble.sticker_config.size : 26,
+                rotation: Number.isFinite(bubble.sticker_config?.rotation) ? bubble.sticker_config.rotation : 0
+            };
+            const { data, error: updateError } = await supabaseAdmin
+                .from('cosmetic_catalog')
+                .update({ sticker_config: stickerConfig, updated_at: new Date().toISOString() })
+                .eq('item_id', itemId)
+                .select('item_id, sticker_config')
+                .single();
+            if (updateError) throw updateError;
+            return res.json(data);
+        } catch (err) {
+            console.error('Error al guardar sticker de burbuja:', err);
+            return res.status(500).json({ message: 'No se pudo guardar la imagen del sticker.' });
+        }
+    }
+);
 
 app.put('/api/admin/cosmetics/:itemId', loginRequired, adminRequired, async (req, res) => {
     if (!supabaseAdmin) {
@@ -823,6 +945,7 @@ app.put('/api/admin/cosmetics/:itemId', loginRequired, adminRequired, async (req
     if (typeof req.body?.icon === 'string') updates.icon = req.body.icon;
     if (typeof req.body?.description === 'string') updates.description = req.body.description.trim();
     if (typeof req.body?.css_code === 'string') updates.css_code = req.body.css_code;
+    if (req.body?.sticker_config !== undefined) updates.sticker_config = req.body.sticker_config;
     if (typeof req.body?.enabled === 'boolean') updates.enabled = req.body.enabled;
 
     if (!/^[a-z0-9][a-z0-9_-]{1,63}$/.test(itemId) ||
@@ -832,7 +955,8 @@ app.put('/api/admin/cosmetics/:itemId', loginRequired, adminRequired, async (req
         (updates.price !== undefined && (!Number.isSafeInteger(updates.price) || updates.price < 0 || updates.price > 100000)) ||
         (updates.icon !== undefined && (!updates.icon || updates.icon.length > 32)) ||
         (updates.description !== undefined && updates.description.length > 500) ||
-        (updates.css_code !== undefined && !isCosmeticCssValid(updates.css_code))) {
+        (updates.css_code !== undefined && !isCosmeticCssValid(updates.css_code)) ||
+        (updates.sticker_config !== undefined && !isCosmeticStickerConfigValid(updates.sticker_config, itemId))) {
         return res.status(400).json({ message: 'Los datos del cosmético no son válidos.' });
     }
 
@@ -841,7 +965,7 @@ app.put('/api/admin/cosmetics/:itemId', loginRequired, adminRequired, async (req
             .from('cosmetic_catalog')
             .update({ ...updates, updated_at: new Date().toISOString() })
             .eq('item_id', itemId)
-            .select('item_id, name, type, price, icon, description, css_code, enabled')
+            .select('item_id, name, type, price, icon, description, css_code, sticker_config, enabled')
             .maybeSingle();
         if (error) throw error;
         if (!data) return res.status(404).json({ message: 'Cosmético no encontrado.' });
