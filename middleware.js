@@ -110,9 +110,9 @@ function isCosmeticStickerConfigValid(stickerConfig, itemId) {
         return false;
     }
 
-    return Number.isFinite(stickerConfig.x) && stickerConfig.x >= 0 && stickerConfig.x <= 100 &&
-        Number.isFinite(stickerConfig.y) && stickerConfig.y >= 0 && stickerConfig.y <= 100 &&
-        Number.isFinite(stickerConfig.size) && stickerConfig.size >= 8 && stickerConfig.size <= 60 &&
+    return Number.isFinite(stickerConfig.x) && stickerConfig.x >= 77 && stickerConfig.x <= 85 &&
+        Number.isFinite(stickerConfig.y) && stickerConfig.y >= 42 && stickerConfig.y <= 58 &&
+        Number.isFinite(stickerConfig.size) && stickerConfig.size >= 8 && stickerConfig.size <= 30 &&
         Number.isFinite(stickerConfig.rotation) && stickerConfig.rotation >= -180 && stickerConfig.rotation <= 180;
 }
 
@@ -913,9 +913,9 @@ app.post(
                 .getPublicUrl(objectPath);
             const stickerConfig = {
                 image_url: `${publicUrlData.publicUrl}?v=${Date.now()}`,
-                x: Number.isFinite(bubble.sticker_config?.x) ? bubble.sticker_config.x : 78,
-                y: Number.isFinite(bubble.sticker_config?.y) ? bubble.sticker_config.y : 24,
-                size: Number.isFinite(bubble.sticker_config?.size) ? bubble.sticker_config.size : 26,
+                x: Number.isFinite(bubble.sticker_config?.x) ? bubble.sticker_config.x : 84,
+                y: Number.isFinite(bubble.sticker_config?.y) ? bubble.sticker_config.y : 50,
+                size: Number.isFinite(bubble.sticker_config?.size) ? bubble.sticker_config.size : 22,
                 rotation: Number.isFinite(bubble.sticker_config?.rotation) ? bubble.sticker_config.rotation : 0
             };
             const { data, error: updateError } = await supabaseAdmin
