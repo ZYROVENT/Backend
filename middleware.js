@@ -19,13 +19,21 @@ const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_dev';
 const SALT_ROUNDS = 10;
 
 // --- Configuración Nodemailer para Envíos de Correo Gmail ---
+// Nota: en instancias gratuitas de Render el tráfico saliente a los puertos SMTP
+// (25/465/587) está bloqueado y la conexión termina en "Connection timeout".
+// En instancias pagas Gmail SMTP funciona sin cambios.
 const emailTransporter = (process.env.GMAIL_USER && process.env.GMAIL_APP_PASS)
     ? nodemailer.createTransport({
-        service: 'gmail',
+        host: process.env.SMTP_HOST || 'smtp.gmail.com',
+        port: Number(process.env.SMTP_PORT) || 465,
+        secure: (Number(process.env.SMTP_PORT) || 465) === 465,
         auth: {
             user: process.env.GMAIL_USER,
             pass: process.env.GMAIL_APP_PASS
-        }
+        },
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 20000
     })
     : null;
 
@@ -1603,13 +1611,19 @@ app.post('/api/user/request_email_change', loginRequired, async (req, res) => {
             expiresAt: Date.now() + 10 * 60 * 1000 // 10 minutos
         });
 
-        await sendGLauncherVerificationEmail(
-            normalizedNewEmail,
-            otpCode,
-            'Código de Confirmación para Nuevo Gmail',
-            'Confirmación de Cambio de Correo',
-            `Hola <strong>${user.username}</strong>, has solicitado vincular esta dirección de Gmail a tu cuenta de GLauncher. Usa el siguiente código para confirmar el cambio:`
-        );
+        try {
+            await sendGLauncherVerificationEmail(
+                normalizedNewEmail,
+                otpCode,
+                'Código de Confirmación para Nuevo Gmail',
+                'Confirmación de Cambio de Correo',
+                `Hola <strong>${user.username}</strong>, has solicitado vincular esta dirección de Gmail a tu cuenta de GLauncher. Usa el siguiente código para confirmar el cambio:`
+            );
+        } catch (mailError) {
+            emailOtpStore.delete(normalizedNewEmail);
+            console.error('Error al enviar el código de cambio de email:', mailError);
+            return res.status(503).json({ message: 'No se pudo enviar el código de verificación en este momento. Intenta de nuevo más tarde.' });
+        }
 
         res.json({ 
             success: true, 
