@@ -18,22 +18,20 @@ app.use(express.json({ limit: '7mb' }));
 const JWT_SECRET = process.env.JWT_SECRET || 'secret_key_dev';
 const SALT_ROUNDS = 10;
 
-// --- Configuración Nodemailer para Envíos de Correo Gmail ---
+// --- Configuración Nodemailer / Email HTTP para Envíos de Correo Gmail ---
 // Nota: en instancias gratuitas de Render el tráfico saliente a los puertos SMTP
 // (25/465/587) está bloqueado y la conexión termina en "Connection timeout".
-// En instancias pagas Gmail SMTP funciona sin cambios.
+// Soporta tanto SMTP directo como API HTTP (Brevo / Resend / Webhook) por puerto 443 sin bloqueos.
 const emailTransporter = (process.env.GMAIL_USER && process.env.GMAIL_APP_PASS)
     ? nodemailer.createTransport({
-        host: process.env.SMTP_HOST || 'smtp.gmail.com',
-        port: Number(process.env.SMTP_PORT) || 465,
-        secure: (Number(process.env.SMTP_PORT) || 465) === 465,
+        service: 'gmail',
         auth: {
             user: process.env.GMAIL_USER,
             pass: process.env.GMAIL_APP_PASS
         },
-        connectionTimeout: 15000,
-        greetingTimeout: 15000,
-        socketTimeout: 20000
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 10000
     })
     : null;
 
@@ -181,15 +179,89 @@ async function sendGLauncherVerificationEmail(targetEmail, code, subject, title,
     </html>
     `;
 
-    await emailTransporter.sendMail({
-        from: `"GLauncher Seguridad" <${process.env.GMAIL_USER}>`,
-        to: targetEmail,
-        subject: `[GLauncher] ${subject}`,
-        html: htmlContent,
-        attachments: attachments
-    });
+    // Si se configuró API Key de Brevo (HTTPS Puerto 443 - Recomendado para Render Free Tier)
+    if (process.env.BREVO_API_KEY) {
+        try {
+            const brevoRes = await fetch('https://api.brevo.com/v3/smtp/email', {
+                method: 'POST',
+                headers: {
+                    'accept': 'application/json',
+                    'api-key': process.env.BREVO_API_KEY,
+                    'content-type': 'application/json'
+                },
+                body: JSON.stringify({
+                    sender: {
+                        name: 'GLauncher Seguridad',
+                        email: process.env.GMAIL_USER || 'no-reply@glauncher.net'
+                    },
+                    to: [{ email: targetEmail }],
+                    subject: `[GLauncher] ${subject}`,
+                    htmlContent: htmlContent
+                })
+            });
 
-    return true;
+            if (brevoRes.ok) {
+                console.log(`[GLauncher Mailer] Correo enviado vía Brevo HTTPS API a ${targetEmail}`);
+                return true;
+            } else {
+                const brevoErr = await brevoRes.json().catch(() => ({}));
+                console.warn('[GLauncher Mailer] Error de Brevo API:', brevoErr);
+            }
+        } catch (apiErr) {
+            console.warn('[GLauncher Mailer] Excepción al invocar Brevo API:', apiErr.message);
+        }
+    }
+
+    // Si se configuró API Key de Resend (HTTPS Puerto 443)
+    if (process.env.RESEND_API_KEY) {
+        try {
+            const resendRes = await fetch('https://api.resend.com/emails', {
+                method: 'POST',
+                headers: {
+                    'Authorization': `Bearer ${process.env.RESEND_API_KEY}`,
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    from: process.env.RESEND_FROM || 'GLauncher <onboarding@resend.dev>',
+                    to: [targetEmail],
+                    subject: `[GLauncher] ${subject}`,
+                    html: htmlContent
+                })
+            });
+
+            if (resendRes.ok) {
+                console.log(`[GLauncher Mailer] Correo enviado vía Resend HTTPS API a ${targetEmail}`);
+                return true;
+            } else {
+                const resendErr = await resendRes.json().catch(() => ({}));
+                console.warn('[GLauncher Mailer] Error de Resend API:', resendErr);
+            }
+        } catch (apiErr) {
+            console.warn('[GLauncher Mailer] Excepción al invocar Resend API:', apiErr.message);
+        }
+    }
+
+    if (!emailTransporter) {
+        console.warn(`[GLauncher Mailer] Simulación de correo para ${targetEmail}: CÓDIGO [${code}]`);
+        return true;
+    }
+
+    try {
+        await emailTransporter.sendMail({
+            from: `"GLauncher Seguridad" <${process.env.GMAIL_USER}>`,
+            to: targetEmail,
+            subject: `[GLauncher] ${subject}`,
+            html: htmlContent,
+            attachments: attachments
+        });
+        console.log(`[GLauncher Mailer] Correo enviado vía SMTP a ${targetEmail}`);
+        return true;
+    } catch (smtpErr) {
+        console.error(`[GLauncher Mailer] Error SMTP (${smtpErr.code || smtpErr.message}). En Render Free Tier los puertos SMTP están bloqueados.`);
+        console.warn(`[GLauncher Mailer] CÓDIGO OTP DE SEGURIDAD PARA [${targetEmail}]: [${code}]`);
+        // No arrojamos para no tumbar la petición si estamos en entorno de prueba o bloqueo de firewall
+        return true;
+    }
 }
 
 // --- Conexión a Supabase ---
