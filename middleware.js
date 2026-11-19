@@ -179,7 +179,31 @@ async function sendGLauncherVerificationEmail(targetEmail, code, subject, title,
     </html>
     `;
 
-    // Si se configuró API Key de Brevo (HTTPS Puerto 443 - Recomendado para Render Free Tier)
+    // 1. Si se configuró Google Apps Script Webhook (HTTPS Puerto 443 - Directo con Gmail y sin bloqueos regionales)
+    if (process.env.GOOGLE_MAIL_WEBHOOK) {
+        try {
+            const googleRes = await fetch(process.env.GOOGLE_MAIL_WEBHOOK, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    to: targetEmail,
+                    subject: `[GLauncher] ${subject}`,
+                    html: htmlContent
+                })
+            });
+
+            if (googleRes.ok) {
+                console.log(`[GLauncher Mailer] Correo enviado exitosamente vía Google Apps Script Webhook a ${targetEmail}`);
+                return true;
+            } else {
+                console.warn('[GLauncher Mailer] Error de respuesta de Google Apps Script:', await googleRes.text().catch(() => ''));
+            }
+        } catch (gasErr) {
+            console.warn('[GLauncher Mailer] Excepción al invocar Google Apps Script:', gasErr.message);
+        }
+    }
+
+    // 2. Si se configuró API Key de Brevo (HTTPS Puerto 443)
     if (process.env.BREVO_API_KEY) {
         try {
             const brevoRes = await fetch('https://api.brevo.com/v3/smtp/email', {
