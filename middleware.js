@@ -31,7 +31,7 @@ const emailTransporter = (process.env.GMAIL_USER && process.env.GMAIL_APP_PASS)
 const emailOtpStore = new Map(); // key: email, value: { code, username, userId, expiresAt }
 const recoveryOtpStore = new Map(); // key: username, value: { code, email, expiresAt }
 
-// Función de despacho de correo con plantilla Neón GLauncher
+// Función de despacho de correo con plantilla Gamer Neón Ultra Premium de GLauncher
 async function sendGLauncherVerificationEmail(targetEmail, code, subject, title, description) {
     if (!emailTransporter) {
         console.warn(`[GLauncher Mailer] Simulación de correo para ${targetEmail}: CÓDIGO [${code}] (Configura GMAIL_USER y GMAIL_APP_PASS en Render para envío real).`);
@@ -39,25 +39,110 @@ async function sendGLauncherVerificationEmail(targetEmail, code, subject, title,
     }
 
     const htmlContent = `
-    <div style="background-color: #0d1117; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; color: #ffffff; padding: 30px; border-radius: 14px; max-width: 520px; margin: 0 auto; border: 1px solid rgba(0, 255, 204, 0.2); box-shadow: 0 10px 30px rgba(0,0,0,0.6);">
-        <div style="text-align: center; margin-bottom: 25px;">
-            <h1 style="color: #00ffcc; text-shadow: 0 0 15px rgba(0, 255, 204, 0.4); margin: 0; font-size: 26px; letter-spacing: 1.5px;">GLauncher</h1>
-            <p style="color: #94a3b8; font-size: 13px; margin-top: 5px;">Seguridad de Cuenta & Verificación</p>
-        </div>
-        <div style="background: rgba(22, 27, 34, 0.9); padding: 25px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.06); text-align: center;">
-            <h2 style="color: #ffffff; font-size: 20px; margin-top: 0;">${title}</h2>
-            <p style="color: #cbd5e1; font-size: 14px; line-height: 1.5;">${description}</p>
-            <div style="margin: 30px 0; background: #00ffcc15; border: 2px dashed #00ffcc; padding: 18px 24px; border-radius: 10px; display: inline-block;">
-                <span style="font-size: 34px; font-weight: bold; letter-spacing: 8px; color: #00ffcc; font-family: monospace;">${code}</span>
-            </div>
-            <p style="color: #64748b; font-size: 12px; margin-bottom: 0;">
-                Este código expira en <strong>10 minutos</strong>. Si tú no solicitaste este cambio, ignora este correo de inmediato.
-            </p>
-        </div>
-        <div style="text-align: center; margin-top: 25px; color: #64748b; font-size: 11px;">
-            &copy; 2026 GLauncher Inc. Todos los derechos reservados.
-        </div>
-    </div>
+    <!DOCTYPE html>
+    <html lang="es">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>${subject}</title>
+    </head>
+    <body style="margin: 0; padding: 0; background-color: #080b11; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">
+        <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background-color: #080b11; padding: 40px 15px;">
+            <tr>
+                <td align="center">
+                    <!-- Contenedor Principal Estilo Tarjeta Gamer -->
+                    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 540px; background: linear-gradient(145deg, #0f1523 0%, #0a0d16 100%); border: 1px solid rgba(0, 243, 255, 0.28); border-radius: 20px; box-shadow: 0 20px 50px rgba(0, 0, 0, 0.8), 0 0 30px rgba(0, 243, 255, 0.12); overflow: hidden;">
+                        
+                        <!-- Barra Superior Neón -->
+                        <tr>
+                            <td height="4" style="background: linear-gradient(90deg, #00f3ff 0%, #ff00ff 50%, #39ff14 100%);"></td>
+                        </tr>
+
+                        <!-- Header con Logo y Branding -->
+                        <tr>
+                            <td align="center" style="padding: 35px 25px 20px 25px;">
+                                <table border="0" cellpadding="0" cellspacing="0">
+                                    <tr>
+                                        <td align="center">
+                                            <div style="background: rgba(0, 243, 255, 0.1); border: 1px solid rgba(0, 243, 255, 0.3); border-radius: 14px; padding: 10px 18px; display: inline-block; margin-bottom: 12px;">
+                                                <span style="font-size: 26px; font-weight: 900; letter-spacing: 2px; color: #00f3ff; text-shadow: 0 0 12px rgba(0, 243, 255, 0.6); font-family: 'Segoe UI', sans-serif;">GLAUNCHER</span>
+                                            </div>
+                                            <p style="margin: 0; color: #94a3b8; font-size: 13px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase;">SISTEMA OFICIAL DE SEGURIDAD</p>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
+
+                        <!-- Cuerpo del Mensaje -->
+                        <tr>
+                            <td style="padding: 10px 35px 25px 35px;">
+                                <div style="background: rgba(18, 24, 38, 0.8); border: 1px solid rgba(255, 255, 255, 0.08); border-radius: 16px; padding: 30px 25px; text-align: center;">
+                                    
+                                    <div style="width: 52px; height: 52px; background: rgba(0, 243, 255, 0.12); border-radius: 50%; border: 1px solid rgba(0, 243, 255, 0.35); margin: 0 auto 18px auto; text-align: center; line-height: 52px;">
+                                        <span style="font-size: 24px;">🛡️</span>
+                                    </div>
+
+                                    <h2 style="margin: 0 0 12px 0; color: #ffffff; font-size: 22px; font-weight: 700;">${title}</h2>
+                                    <p style="margin: 0 0 25px 0; color: #cbd5e1; font-size: 14px; line-height: 1.6;">${description}</p>
+
+                                    <!-- Caja Neón de Código OTP -->
+                                    <table border="0" cellpadding="0" cellspacing="0" align="center" style="margin: 0 auto 25px auto;">
+                                        <tr>
+                                            <td align="center" style="background: linear-gradient(135deg, rgba(0, 243, 255, 0.15) 0%, rgba(255, 0, 255, 0.15) 100%); border: 2px dashed #00f3ff; border-radius: 12px; padding: 18px 32px; box-shadow: 0 0 25px rgba(0, 243, 255, 0.25);">
+                                                <span style="font-family: 'Courier New', Courier, monospace; font-size: 38px; font-weight: 900; letter-spacing: 10px; color: #ffffff; text-shadow: 0 0 15px #00f3ff, 0 0 25px #00f3ff; display: block; margin-left: 10px;">${code}</span>
+                                            </td>
+                                        </tr>
+                                    </table>
+
+                                    <!-- Medidor de validez / Alerta -->
+                                    <table border="0" cellpadding="0" cellspacing="0" width="100%" style="background: rgba(0, 0, 0, 0.35); border-radius: 10px; padding: 12px;">
+                                        <tr>
+                                            <td align="center">
+                                                <p style="margin: 0; font-size: 12px; color: #94a3b8; line-height: 1.5;">
+                                                    ⏳ <strong style="color: #ff00ff;">Expira en 10 minutos</strong>. Si tú no solicitaste este código, tu cuenta sigue segura y puedes ignorar este correo.
+                                                </p>
+                                            </td>
+                                        </tr>
+                                    </table>
+
+                                </div>
+                            </td>
+                        </tr>
+
+                        <!-- Características y Enlaces de Confianza -->
+                        <tr>
+                            <td style="padding: 0 35px 25px 35px;">
+                                <table border="0" cellpadding="0" cellspacing="0" width="100%">
+                                    <tr>
+                                        <td align="center" style="color: #64748b; font-size: 12px;">
+                                            <span>🔒 Conexión Cifrada SSL</span> &bull; 
+                                            <span>⚡ Entrega Inmediata</span> &bull; 
+                                            <span>🎮 GLauncher 2026</span>
+                                        </td>
+                                    </tr>
+                                </table>
+                            </td>
+                        </tr>
+
+                        <!-- Footer -->
+                        <tr>
+                            <td align="center" style="padding: 20px 25px; background: rgba(8, 11, 17, 0.7); border-top: 1px solid rgba(255, 255, 255, 0.05);">
+                                <p style="margin: 0 0 6px 0; color: #64748b; font-size: 12px;">
+                                    Este es un mensaje automático de seguridad generado por los servidores de GLauncher.
+                                </p>
+                                <p style="margin: 0; color: #475569; font-size: 11px;">
+                                    &copy; 2026 GLauncher Inc. Todos los derechos reservados.
+                                </p>
+                            </td>
+                        </tr>
+
+                    </table>
+                </td>
+            </tr>
+        </table>
+    </body>
+    </html>
     `;
 
     await emailTransporter.sendMail({
