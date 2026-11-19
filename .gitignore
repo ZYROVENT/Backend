@@ -1,0 +1,27 @@
+# Node.js backend
+node_modules/
+npm-debug.log
+.env
+.env.local
+.env.*.local
+
+# Java frontend compiled files
+glauncher_frontend
+glauncher_frontend/out/
+glauncher_frontend/temp_input/
+*.jar
+*.exe
+
+# Evitar publicar la web
+
+GLauncher-Web/
+GLauncher-Web/GLAUNCHER-WEB/
+
+# Operating System files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.iml
