@@ -4,6 +4,8 @@ const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const sharp = require('sharp');
+const path = require('path');
+const fs = require('fs');
 const { createClient } = require('@supabase/supabase-js');
 const bcrypt = require('bcryptjs');
 const Pusher = require('pusher');
@@ -31,11 +33,36 @@ const emailTransporter = (process.env.GMAIL_USER && process.env.GMAIL_APP_PASS)
 const emailOtpStore = new Map(); // key: email, value: { code, username, userId, expiresAt }
 const recoveryOtpStore = new Map(); // key: username, value: { code, email, expiresAt }
 
-// Función de despacho de correo con plantilla Gamer Neón Ultra Premium de GLauncher
+// Función de despacho de correo con plantilla Gamer Neón Ultra Premium de GLauncher e imágenes incrustadas (CID)
 async function sendGLauncherVerificationEmail(targetEmail, code, subject, title, description) {
     if (!emailTransporter) {
         console.warn(`[GLauncher Mailer] Simulación de correo para ${targetEmail}: CÓDIGO [${code}] (Configura GMAIL_USER y GMAIL_APP_PASS en Render para envío real).`);
         return true;
+    }
+
+    const logoPath = path.join(__dirname, 'glauncher_logo.png');
+    const titlePath = path.join(__dirname, 'minecraft_title.png');
+    const attachments = [];
+
+    let logoImgTag = `<span style="font-size: 26px; font-weight: 900; letter-spacing: 2px; color: #00f3ff; text-shadow: 0 0 12px rgba(0, 243, 255, 0.6); font-family: 'Segoe UI', sans-serif;">GLAUNCHER</span>`;
+    let titleImgTag = ``;
+
+    if (fs.existsSync(logoPath)) {
+        attachments.push({
+            filename: 'glauncher_logo.png',
+            path: logoPath,
+            cid: 'glauncher_logo'
+        });
+        logoImgTag = `<img src="cid:glauncher_logo" alt="Logo de GLauncher" width="68" height="68" style="display: block; margin: 0 auto; filter: drop-shadow(0 0 12px rgba(0, 243, 255, 0.5));">`;
+    }
+
+    if (fs.existsSync(titlePath)) {
+        attachments.push({
+            filename: 'minecraft_title.png',
+            path: titlePath,
+            cid: 'minecraft_title'
+        });
+        titleImgTag = `<img src="cid:minecraft_title" alt="Título GLauncher" width="160" style="display: block; margin: 10px auto 0 auto; filter: drop-shadow(0 0 8px rgba(0,0,0,0.8));">`;
     }
 
     const htmlContent = `
@@ -58,16 +85,17 @@ async function sendGLauncherVerificationEmail(targetEmail, code, subject, title,
                             <td height="4" style="background: linear-gradient(90deg, #00f3ff 0%, #ff00ff 50%, #39ff14 100%);"></td>
                         </tr>
 
-                        <!-- Header con Logo y Branding -->
+                        <!-- Header con Logo y Branding Oficial de GLauncher -->
                         <tr>
                             <td align="center" style="padding: 35px 25px 20px 25px;">
                                 <table border="0" cellpadding="0" cellspacing="0">
                                     <tr>
                                         <td align="center">
-                                            <div style="background: rgba(0, 243, 255, 0.1); border: 1px solid rgba(0, 243, 255, 0.3); border-radius: 14px; padding: 10px 18px; display: inline-block; margin-bottom: 12px;">
-                                                <span style="font-size: 26px; font-weight: 900; letter-spacing: 2px; color: #00f3ff; text-shadow: 0 0 12px rgba(0, 243, 255, 0.6); font-family: 'Segoe UI', sans-serif;">GLAUNCHER</span>
+                                            <div style="background: rgba(0, 243, 255, 0.08); border: 1px solid rgba(0, 243, 255, 0.25); border-radius: 18px; padding: 14px 22px; display: inline-block; margin-bottom: 12px; box-shadow: 0 0 20px rgba(0, 243, 255, 0.15);">
+                                                ${logoImgTag}
+                                                ${titleImgTag}
                                             </div>
-                                            <p style="margin: 0; color: #94a3b8; font-size: 13px; font-weight: 500; letter-spacing: 1px; text-transform: uppercase;">SISTEMA OFICIAL DE SEGURIDAD</p>
+                                            <p style="margin: 8px 0 0 0; color: #94a3b8; font-size: 13px; font-weight: 500; letter-spacing: 1.5px; text-transform: uppercase;">SISTEMA OFICIAL DE SEGURIDAD</p>
                                         </td>
                                     </tr>
                                 </table>
@@ -149,7 +177,8 @@ async function sendGLauncherVerificationEmail(targetEmail, code, subject, title,
         from: `"GLauncher Seguridad" <${process.env.GMAIL_USER}>`,
         to: targetEmail,
         subject: `[GLauncher] ${subject}`,
-        html: htmlContent
+        html: htmlContent,
+        attachments: attachments
     });
 
     return true;
