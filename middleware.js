@@ -184,7 +184,8 @@ async function sendGLauncherVerificationEmail(targetEmail, code, subject, title,
         try {
             const googleRes = await fetch(process.env.GOOGLE_MAIL_WEBHOOK, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                redirect: 'follow',
+                headers: { 'Content-Type': 'text/plain;charset=utf-8' },
                 body: JSON.stringify({
                     to: targetEmail,
                     subject: `[GLauncher] ${subject}`,
@@ -192,11 +193,12 @@ async function sendGLauncherVerificationEmail(targetEmail, code, subject, title,
                 })
             });
 
-            if (googleRes.ok) {
+            const resText = await googleRes.text().catch(() => '');
+            if (googleRes.ok && (resText.includes('OK') || resText.includes('success'))) {
                 console.log(`[GLauncher Mailer] Correo enviado exitosamente vía Google Apps Script Webhook a ${targetEmail}`);
                 return true;
             } else {
-                console.warn('[GLauncher Mailer] Error de respuesta de Google Apps Script:', await googleRes.text().catch(() => ''));
+                console.warn('[GLauncher Mailer] Respuesta Google Apps Script:', resText.slice(0, 300));
             }
         } catch (gasErr) {
             console.warn('[GLauncher Mailer] Excepción al invocar Google Apps Script:', gasErr.message);
