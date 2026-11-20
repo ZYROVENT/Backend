@@ -370,7 +370,7 @@ function isCosmeticStickerConfigValid(stickerConfig, itemId) {
     if (!stickerConfig || typeof stickerConfig !== 'object' || Array.isArray(stickerConfig)) return false;
     const keys = Object.keys(stickerConfig);
     if (keys.length === 0) return true;
-    if (keys.some(key => !['image_url', 'x', 'y', 'size', 'rotation'].includes(key))) return false;
+    if (keys.some(key => !['image_url', 'x', 'y', 'size', 'rotation', 'layer'].includes(key))) return false;
 
     const imageUrl = stickerConfig.image_url;
     if (typeof imageUrl !== 'string' || !itemId) return false;
@@ -385,10 +385,13 @@ function isCosmeticStickerConfigValid(stickerConfig, itemId) {
         return false;
     }
 
-    return Number.isFinite(stickerConfig.x) && stickerConfig.x >= 82 && stickerConfig.x <= 88 &&
-        Number.isFinite(stickerConfig.y) && stickerConfig.y >= 42 && stickerConfig.y <= 58 &&
-        Number.isFinite(stickerConfig.size) && stickerConfig.size >= 8 && stickerConfig.size <= 20 &&
-        Number.isFinite(stickerConfig.rotation) && stickerConfig.rotation >= -180 && stickerConfig.rotation <= 180;
+    const layerValid = stickerConfig.layer === undefined || ['front', 'back'].includes(stickerConfig.layer);
+
+    return Number.isFinite(stickerConfig.x) && stickerConfig.x >= 0 && stickerConfig.x <= 100 &&
+        Number.isFinite(stickerConfig.y) && stickerConfig.y >= 0 && stickerConfig.y <= 100 &&
+        Number.isFinite(stickerConfig.size) && stickerConfig.size >= 5 && stickerConfig.size <= 50 &&
+        Number.isFinite(stickerConfig.rotation) && stickerConfig.rotation >= -180 && stickerConfig.rotation <= 180 &&
+        layerValid;
 }
 
 // In-memory fallback caches
@@ -1341,7 +1344,8 @@ app.post(
                 x: Number.isFinite(bubble.sticker_config?.x) ? bubble.sticker_config.x : 85,
                 y: Number.isFinite(bubble.sticker_config?.y) ? bubble.sticker_config.y : 50,
                 size: Number.isFinite(bubble.sticker_config?.size) ? bubble.sticker_config.size : 18,
-                rotation: Number.isFinite(bubble.sticker_config?.rotation) ? bubble.sticker_config.rotation : 0
+                rotation: Number.isFinite(bubble.sticker_config?.rotation) ? bubble.sticker_config.rotation : 0,
+                layer: bubble.sticker_config?.layer === 'back' ? 'back' : 'front'
             };
             const { data, error: updateError } = await supabaseAdmin
                 .from('cosmetic_catalog')
