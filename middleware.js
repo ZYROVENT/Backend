@@ -387,9 +387,9 @@ function isCosmeticStickerConfigValid(stickerConfig, itemId) {
 
     const layerValid = stickerConfig.layer === undefined || ['front', 'back'].includes(stickerConfig.layer);
 
-    return Number.isFinite(stickerConfig.x) && stickerConfig.x >= 0 && stickerConfig.x <= 100 &&
-        Number.isFinite(stickerConfig.y) && stickerConfig.y >= 0 && stickerConfig.y <= 100 &&
-        Number.isFinite(stickerConfig.size) && stickerConfig.size >= 5 && stickerConfig.size <= 50 &&
+    return Number.isFinite(stickerConfig.x) && stickerConfig.x >= -100 && stickerConfig.x <= 200 &&
+        Number.isFinite(stickerConfig.y) && stickerConfig.y >= -100 && stickerConfig.y <= 200 &&
+        Number.isFinite(stickerConfig.size) && stickerConfig.size >= 1 && stickerConfig.size <= 250 &&
         Number.isFinite(stickerConfig.rotation) && stickerConfig.rotation >= -180 && stickerConfig.rotation <= 180 &&
         layerValid;
 }
