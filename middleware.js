@@ -370,7 +370,7 @@ function isCosmeticStickerConfigValid(stickerConfig, itemId) {
     if (!stickerConfig || typeof stickerConfig !== 'object' || Array.isArray(stickerConfig)) return false;
     const keys = Object.keys(stickerConfig);
     if (keys.length === 0) return true;
-    if (keys.some(key => !['image_url', 'x', 'y', 'size', 'rotation', 'layer'].includes(key))) return false;
+    if (keys.some(key => !['image_url', 'x', 'y', 'size', 'rotation', 'layer', 'scale_x', 'scale_y'].includes(key))) return false;
 
     const imageUrl = stickerConfig.image_url;
     if (typeof imageUrl !== 'string' || !itemId) return false;
@@ -386,12 +386,14 @@ function isCosmeticStickerConfigValid(stickerConfig, itemId) {
     }
 
     const layerValid = stickerConfig.layer === undefined || ['front', 'back'].includes(stickerConfig.layer);
+    const scaleXValid = stickerConfig.scale_x === undefined || (Number.isFinite(stickerConfig.scale_x) && stickerConfig.scale_x >= 0.1 && stickerConfig.scale_x <= 10);
+    const scaleYValid = stickerConfig.scale_y === undefined || (Number.isFinite(stickerConfig.scale_y) && stickerConfig.scale_y >= 0.1 && stickerConfig.scale_y <= 10);
 
-    return Number.isFinite(stickerConfig.x) && stickerConfig.x >= -100 && stickerConfig.x <= 200 &&
-        Number.isFinite(stickerConfig.y) && stickerConfig.y >= -100 && stickerConfig.y <= 200 &&
-        Number.isFinite(stickerConfig.size) && stickerConfig.size >= 1 && stickerConfig.size <= 250 &&
+    return Number.isFinite(stickerConfig.x) && stickerConfig.x >= -300 && stickerConfig.x <= 400 &&
+        Number.isFinite(stickerConfig.y) && stickerConfig.y >= -300 && stickerConfig.y <= 400 &&
+        Number.isFinite(stickerConfig.size) && stickerConfig.size >= 1 && stickerConfig.size <= 500 &&
         Number.isFinite(stickerConfig.rotation) && stickerConfig.rotation >= -180 && stickerConfig.rotation <= 180 &&
-        layerValid;
+        layerValid && scaleXValid && scaleYValid;
 }
 
 // In-memory fallback caches
@@ -1341,11 +1343,13 @@ app.post(
                 .getPublicUrl(objectPath);
             const stickerConfig = {
                 image_url: `${publicUrlData.publicUrl}?v=${Date.now()}`,
-                x: Number.isFinite(bubble.sticker_config?.x) ? bubble.sticker_config.x : 85,
+                x: Number.isFinite(bubble.sticker_config?.x) ? bubble.sticker_config.x : 50,
                 y: Number.isFinite(bubble.sticker_config?.y) ? bubble.sticker_config.y : 50,
-                size: Number.isFinite(bubble.sticker_config?.size) ? bubble.sticker_config.size : 18,
+                size: Number.isFinite(bubble.sticker_config?.size) ? bubble.sticker_config.size : 100,
                 rotation: Number.isFinite(bubble.sticker_config?.rotation) ? bubble.sticker_config.rotation : 0,
-                layer: bubble.sticker_config?.layer === 'back' ? 'back' : 'front'
+                layer: bubble.sticker_config?.layer === 'front' ? 'front' : 'back',
+                scale_x: Number.isFinite(bubble.sticker_config?.scale_x) ? bubble.sticker_config.scale_x : 1,
+                scale_y: Number.isFinite(bubble.sticker_config?.scale_y) ? bubble.sticker_config.scale_y : 1
             };
             const { data, error: updateError } = await supabaseAdmin
                 .from('cosmetic_catalog')
