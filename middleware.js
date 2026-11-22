@@ -2247,6 +2247,66 @@ app.post('/api/gchat/send/:recipientId', loginRequired, async (req, res) => {
 // --- RUTAS DE TIENDA Y RECOMPENSAS ---
 // ==========================================
 
+// ---------------------------------------------------------------------------
+// Señalización de llamadas (WebRTC)
+//
+// El audio viaja directo entre los dos móviles (P2P); el servidor solo hace de
+// cartero con las ofertas, respuestas y candidatos ICE. Cada usuario tiene una
+// cola en memoria con caducidad de un minuto, así que si el otro está cerrado
+// la llamada simplemente no entra. Además se avisa por Pusher para que el
+// cliente pueda enterarse sin esperar al sondeo.
+// ---------------------------------------------------------------------------
+const callQueues = new Map(); // userId -> [{ id, from, username, type, payload, at }]
+const CALL_SIGNAL_TTL_MS = 60 * 1000;
+const CALL_SIGNAL_TYPES = ['offer', 'answer', 'ice', 'hangup'];
+
+function queueCallSignal(userId, signal) {
+    const now = Date.now();
+    const list = (callQueues.get(userId) || []).filter(s => now - s.at < CALL_SIGNAL_TTL_MS);
+    list.push(signal);
+    // Tope defensivo: una llamada normal son unas decenas de señales.
+    callQueues.set(userId, list.slice(-200));
+}
+
+app.post('/api/calls/signal', loginRequired, async (req, res) => {
+    const to = req.body?.to;
+    const type = req.body?.type;
+    const payload = req.body?.payload ?? null;
+    if (!isUuid(String(to || ''))) {
+        return res.status(400).json({ message: 'Destino de la llamada no válido.' });
+    }
+    if (!CALL_SIGNAL_TYPES.includes(type)) {
+        return res.status(400).json({ message: 'Tipo de señal no válido.' });
+    }
+    try {
+        if (!await isAcceptedFriendship(req.user.id, to)) {
+            return res.status(403).json({ message: 'Solo puedes llamar a amigos aceptados.' });
+        }
+        const signal = {
+            id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            from: req.user.id,
+            username: req.user.username,
+            type,
+            payload,
+            at: Date.now()
+        };
+        queueCallSignal(to, signal);
+        if (pusher) {
+            pusher.trigger(`user-${to}`, 'call-signal', signal).catch(() => {});
+        }
+        return res.json({ ok: true });
+    } catch (error) {
+        console.error('Call signal error:', error);
+        return res.status(500).json({ message: 'No se pudo enviar la señal de la llamada.' });
+    }
+});
+
+app.get('/api/calls/pending', loginRequired, (req, res) => {
+    const list = callQueues.get(req.user.id) || [];
+    callQueues.delete(req.user.id);
+    res.json({ signals: list });
+});
+
 app.post('/api/gameplay/heartbeat', loginRequired, async (req, res) => {
     if (!supabaseAdmin) {
         return res.status(503).json({ message: 'La sincronización de juego no está configurada.' });
