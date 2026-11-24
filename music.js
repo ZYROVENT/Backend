@@ -32,7 +32,22 @@ const CHUNK_BYTES = 1000 * 1000;
 const AGENTE_AUDIO =
     'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Mobile Safari/537.36';
 
+// Orden pensado para servidores (IP de datacenter): los clientes VR y TV
+// embebidos son los que YouTube sigue sirviendo sin pedir login.
 const CLIENTS = [
+    {
+        name: 'ANDROID_VR',
+        version: '1.62.27',
+        userAgent:
+            'com.google.android.apps.youtube.vr.oculus/1.62.27 (Linux; U; Android 12; en_US; Quest 3; Build/SQ3A.220605.009.A1) gzip',
+        device: { androidSdkVersion: 32, osName: 'Android', osVersion: '12' }
+    },
+    {
+        name: 'TVHTML5_SIMPLY_EMBEDDED_PLAYER',
+        version: '2.0',
+        userAgent: 'Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version',
+        thirdParty: { embedUrl: 'https://www.youtube.com/' }
+    },
     {
         name: 'IOS',
         version: '20.10.4',
@@ -44,6 +59,13 @@ const CLIENTS = [
         version: '20.10.38',
         userAgent: 'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip',
         device: { androidSdkVersion: 30, osName: 'Android', osVersion: '11' }
+    },
+    {
+        name: 'WEB_EMBEDDED_PLAYER',
+        version: '1.20250310.01.00',
+        userAgent:
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+        thirdParty: { embedUrl: 'https://www.youtube.com/' }
     }
 ];
 
@@ -103,6 +125,7 @@ async function resolveWith(client, videoId) {
                     ...client.device
                 }
             },
+            ...(client.thirdParty ? { thirdParty: client.thirdParty } : {}),
             videoId,
             contentCheckOk: true,
             racyCheckOk: true
