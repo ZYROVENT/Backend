@@ -300,6 +300,14 @@ const supabaseAdmin = supabaseAdminKey
         auth: { autoRefreshToken: false, persistSession: false }
     })
     : null;
+
+if (!supabaseAdmin) {
+    console.warn(
+        '[Auth] Falta SUPABASE_SERVICE_ROLE_KEY: el inicio de sesión con Google/Microsoft ' +
+        'responderá 503 y las operaciones de administración no podrán escribir en Supabase.\n' +
+        '       Añádela al .env (Supabase → Project Settings → API → service_role).'
+    );
+}
 const gameplayHeartbeats = new Map();
 
 // --- Configuración de Pusher (Real-time notifications & chat) ---
@@ -483,6 +491,39 @@ const getNeonLoaderHtml = (provider, targetUrl) => `
     </div>
     <script>
         setTimeout(() => { window.location.href = '${targetUrl}'; }, 2000);
+    </script>
+</body>
+</html>
+`;
+
+/**
+ * Página que devuelve el navegador a la app de PC con el token por deep link.
+ * Sirve para los logins sociales del launcher (return_to=glauncher://auth).
+ */
+const getAppRedirectHtml = (appUrl) => `
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Volviendo a GLauncher</title>
+    <style>
+        body { margin: 0; display: flex; justify-content: center; align-items: center; height: 100vh; background: #050505; font-family: 'Segoe UI', sans-serif; color: #fff; text-align: center; }
+        .box { padding: 24px; }
+        h2 { letter-spacing: 1px; font-size: 1.1rem; }
+        p { color: #9a9a9a; font-size: 0.85rem; }
+        a { color: #00ff0a; font-size: 0.85rem; }
+    </style>
+</head>
+<body>
+    <div class="box">
+        <h2>¡Listo!</h2>
+        <p>Volviendo a GLauncher… Si no se abre solo, pulsa el enlace.</p>
+        <a href="${appUrl}">Abrir GLauncher</a>
+    </div>
+    <script>
+        window.location.href = '${appUrl}';
+        setTimeout(() => { window.close(); }, 2500);
     </script>
 </body>
 </html>
@@ -859,13 +900,34 @@ app.get('/login/google', (req, res) => {
 app.get('/auth/google/callback', async (req, res) => {
     try {
         if (!supabaseAdmin) {
-            return res.status(503).send('El inicio de sesión no está configurado.');
+            return res.status(503).send(
+                '<h1>Inicio de sesión no configurado</h1>' +
+                '<p>Al backend le falta la variable <b>SUPABASE_SERVICE_ROLE_KEY</b>.</p>' +
+                '<p>Añádela en Supabase → Project Settings → API → service_role y reinicia el servidor.</p>'
+            );
         }
         const returnTo = req.query.return_to || '';
-        const targetHost = returnTo ? new URL(returnTo).origin : '';
+        // La app de PC pide volver con glaucher://auth. En ese caso hay que
+        // devolver el token por deep link: antes se construía "null/src/html/
+        // dashboard.html" porque una URL de app no tiene origin HTTP.
+        const esApp = /^glauncher:/i.test(returnTo);
+        let targetHost = '';
+        if (returnTo && !esApp) {
+            try { targetHost = new URL(returnTo).origin; } catch (_) { targetHost = ''; }
+        }
         const targetDashboard = targetHost ? `${targetHost}/src/html/dashboard.html` : '/src/html/dashboard.html';
 
-        const demoEmail = `gamer_${Math.floor(1000 + Math.random() * 9000)}`;
+        // Sin credenciales OAuth reales configuradas, este flujo crea una cuenta
+        // demo. Se guarda en una cookie para reutilizarla: antes salía un usuario
+        // aleatorio en cada login y parecía que la cuenta y sus datos se perdían.
+        const cookies = Object.fromEntries((req.headers.cookie || '').split(';')
+            .map(parte => parte.trim().split('='))
+            .filter(par => par.length === 2));
+        const cuentaPrevia = cookies['glauncher_social_google'];
+        const demoEmail = cuentaPrevia || `gamer_${Math.floor(1000 + Math.random() * 9000)}`;
+        if (!cuentaPrevia) {
+            res.setHeader('Set-Cookie', `glauncher_social_google=${demoEmail}; Path=/; Max-Age=31536000; SameSite=Lax`);
+        }
         let { data: user } = await supabaseAdmin.from('users').select('*').eq('username', demoEmail).maybeSingle();
 
         if (!user) {
@@ -883,6 +945,12 @@ app.get('/auth/google/callback', async (req, res) => {
         }
 
         const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+        if (esApp) {
+            const destino = new URL(returnTo);
+            destino.searchParams.set('token', token);
+            destino.searchParams.set('user', user.username);
+            return res.send(getAppRedirectHtml(destino.toString()));
+        }
         res.send(getSuccessHtml(token, targetDashboard));
     } catch (error) {
         console.error('Error OAuth Google:', error);
@@ -901,13 +969,31 @@ app.get('/login/microsoft', (req, res) => {
 app.get('/auth/microsoft/callback', async (req, res) => {
     try {
         if (!supabaseAdmin) {
-            return res.status(503).send('El inicio de sesión no está configurado.');
+            return res.status(503).send(
+                '<h1>Inicio de sesión no configurado</h1>' +
+                '<p>Al backend le falta la variable <b>SUPABASE_SERVICE_ROLE_KEY</b>.</p>' +
+                '<p>Añádela en Supabase → Project Settings → API → service_role y reinicia el servidor.</p>'
+            );
         }
         const returnTo = req.query.return_to || '';
-        const targetHost = returnTo ? new URL(returnTo).origin : '';
+        // La app de PC pide volver con glaucher://auth. En ese caso hay que
+        // devolver el token por deep link: antes se construía "null/src/html/
+        // dashboard.html" porque una URL de app no tiene origin HTTP.
+        const esApp = /^glauncher:/i.test(returnTo);
+        let targetHost = '';
+        if (returnTo && !esApp) {
+            try { targetHost = new URL(returnTo).origin; } catch (_) { targetHost = ''; }
+        }
         const targetDashboard = targetHost ? `${targetHost}/src/html/dashboard.html` : '/src/html/dashboard.html';
 
-        const demoEmail = `msft_${Math.floor(1000 + Math.random() * 9000)}`;
+        const cookies = Object.fromEntries((req.headers.cookie || '').split(';')
+            .map(parte => parte.trim().split('='))
+            .filter(par => par.length === 2));
+        const cuentaPrevia = cookies['glauncher_social_microsoft'];
+        const demoEmail = cuentaPrevia || `msft_${Math.floor(1000 + Math.random() * 9000)}`;
+        if (!cuentaPrevia) {
+            res.setHeader('Set-Cookie', `glauncher_social_microsoft=${demoEmail}; Path=/; Max-Age=31536000; SameSite=Lax`);
+        }
         let { data: user } = await supabaseAdmin.from('users').select('*').eq('username', demoEmail).maybeSingle();
 
         if (!user) {
@@ -925,6 +1011,12 @@ app.get('/auth/microsoft/callback', async (req, res) => {
         }
 
         const token = jwt.sign({ id: user.id, username: user.username, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+        if (esApp) {
+            const destino = new URL(returnTo);
+            destino.searchParams.set('token', token);
+            destino.searchParams.set('user', user.username);
+            return res.send(getAppRedirectHtml(destino.toString()));
+        }
         res.send(getSuccessHtml(token, targetDashboard));
     } catch (error) {
         console.error('Error OAuth Microsoft:', error);
